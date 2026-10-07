@@ -1,0 +1,39 @@
+# Builds kernelbook-rl's shared base image and pushes it to Docker Hub.
+# Runs on GitHub's machines, so no Docker is needed on the Mac.
+#
+# One-time setup in GitHub -> repo Settings -> Secrets and variables -> Actions:
+#   Variables tab: DOCKERHUB_USERNAME = your Docker Hub username   (not secret; also names the image)
+#   Secrets tab:   DOCKERHUB_TOKEN    = a Docker Hub access token with Read & Write scope
+#                                       (Docker Hub -> Account settings -> Personal access tokens)
+
+name: kernel-env base image
+
+on:
+  push:
+    paths:                                   # rebuild only when the image recipe changes
+      - "kernelbook-rl/docker/**"
+      - ".github/workflows/kernel-env-base-image.yml"
+  workflow_dispatch:                          # plus a manual "Run workflow" button
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3   # the modern Docker builder
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: kernelbook-rl/docker
+          file: kernelbook-rl/docker/base.Dockerfile
+          platforms: linux/amd64             # Modal's GPU machines are x86_64
+          push: true
+          # The tag names the pinned torch version, so a future torch bump gets a new tag
+          # instead of silently changing the image existing tasks point at.
+          tags: ${{ vars.DOCKERHUB_USERNAME }}/kernel-env-base:torch2.5.1
