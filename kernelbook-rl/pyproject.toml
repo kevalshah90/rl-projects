@@ -1,0 +1,36 @@
+# kernelbook-rl: a Triton-kernel RL environment in Harbor format, built from GPUMODE/KernelBook.
+# Managed by uv. Dependencies are added in the build step that first needs them,
+# so this list only grows when something actually uses a package.
+
+[project]
+name = "kernelbook-rl"
+version = "0.1.0"
+description = "Harbor-format Triton kernel tasks from KernelBook, plus the RL loops that train on them"
+readme = "README.md"
+# 3.12: supported by torch, vLLM, prime-rl and verifiers; matches the Python already on this Mac.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "modal",            # step 0: GPUs and sandboxes for everything that needs CUDA
+    "datasets",         # step 1: downloads GPUMODE/KernelBook from Hugging Face
+    # step 2: runs reference modules on CPU for the F5 check. 2.5.1 = the version KernelBook's
+    # oracles were generated with. Needs an ARM64 Python on Apple Silicon (see .python-version).
+    "torch==2.5.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",           # step 0: runs tests/ (Mac-only tests need no GPU)
+]
+
+[build-system]
+# Makes kernel_env/ an installable package, so `import kernel_env` works from scripts/ and tests/.
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kernel_env"]
+
+[tool.uv]
+# cbor2 >=6 requires Rust to build from source and has no prebuilt wheel for this platform.
+# Pinning to <6 (pure Python) is safe — modal only needs the cbor2 API, not the Rust speedups.
+constraint-dependencies = ["cbor2<6"]
