@@ -35,6 +35,65 @@ Output — a typed, immutable Row:
         repo_link="https://github.com/org/repo/tree/<sha>",
     )
 
+Section 2 — Static code analysis (AST only, never executes code)
+    parse()             Parse python_code into an AST; returns None on SyntaxError.
+    top_level()         Find a named class or function at the top level of the tree.
+    dotted()            Resolve an attribute chain (torch.nn.functional.relu) to a
+                        dotted string, normalised to the short form (F.relu).
+    input_shapes()      Read tensor shapes from get_inputs() without running it.
+                        Used by size_reason() to check element count statically.
+    _strip_docstrings() Remove docstring nodes so modules that differ only in
+                        documentation hash identically.
+    source_key()        SHA-256 of the canonicalised, docstring-free source — used
+                        by F1 (duplicate detection) in s02_filter.py.
+    structure_key()     SHA-256 of the module class alone, renamed to `Model` — used
+                        by F6 (KernelBench overlap) so `class Foo` and `class Model`
+                        match when their bodies are identical.
+
+    Example (using the SumAggregator row above):
+        tree = parse(row.python_code)
+        # → ast.Module
+
+        top_level(tree, ast.FunctionDef, "get_inputs")
+        # → ast.FunctionDef node for get_inputs()
+
+        top_level(tree, ast.ClassDef, "SumAggregator")
+        # → ast.ClassDef node for the module class
+
+        # inside get_inputs(), torch.rand([4, 4, 4, 4]) is a call node;
+        # dotted(call.func) resolves the attribute chain:
+        dotted(call.func)                      # → "torch.rand"
+
+        input_shapes(tree)                     # → [(4, 4, 4, 4)]
+        source_key(row.python_code)            # → "a3f9..."  (same for any whitespace/comment variant)
+        structure_key(row.python_code, "SumAggregator")  # → "c71b..."
+
+Section 3 — Filters (each returns None to keep, or a reason string to drop)
+    license_reason()  Drop rows with no license or a copyleft/non-commercial license.
+    size_reason()     Drop rows whose prompt is too long (> 200 lines), whose input
+                      shapes can't be read statically, or whose total input element
+                      count exceeds 1 M (4 MB of float32).
+    static_reason()   Combines parse + license + size; the single call site for
+                      F2–F4 in s02_filter.py.
+    exec_check()      Actually instantiates and runs the nn.Module on CPU. Drops the
+                      row if construction produces non-finite weights, the forward
+                      pass crashes, the output is not a single finite tensor, or two
+                      forward calls on the same inputs differ. Runs on the Mac, but only
+                      inside a disposable worker subprocess (exec_worker.py), never in
+                      the main process.
+
+    Example (using the SumAggregator row above):
+        license_reason(row)                    # → None           (Apache-2.0 is fine)
+        static_reason(row)                     # → None           (passes all static checks)
+
+        # a row that would be dropped:
+        license_reason(gpl_row)                # → "license: copyleft or non-commercial ['GPL-3.0']"
+        static_reason(long_row)                # → "length: 210 lines > 200"
+        static_reason(huge_row)                # → "inputs: 2,097,152 elements > 1,048,576"
+
+        exec_check(row.python_code, "SumAggregator")   # → None  (runs, finite, deterministic)
+        exec_check(bad_row.python_code, "BadInit")     # → "init: non-finite weights (uninitialized memory?)"
+
 """
 
 import ast
@@ -226,7 +285,8 @@ def static_reason(row: Row) -> str | None:
 
 
 def exec_check(python_code: str, module_name: str) -> str | None:
-    """RUNS the row's code on CPU: build the module, call forward, check the output.
+    """
+    RUNS the row's code on CPU: build the module, call forward, check the output.
 
     Executes untrusted code from GitHub, so call it ONLY inside a disposable child process
     (kernel_env/exec_worker.py, started by scripts/s02_filter.py), never in a long-lived one.
@@ -238,22 +298,28 @@ def exec_check(python_code: str, module_name: str) -> str | None:
     uninitialized memory that no seed controls, so the grader copies the reference's
     weights into the solution instead of rebuilding them; this check mirrors that.
     """
+
     import torch   # imported here: only the worker process needs torch
 
     try:
+        
         namespace = {"__name__": "kernelbook_row"}
         exec(python_code, namespace)                      # defines the class + get_inputs()
         args, kwargs = namespace["get_init_inputs"]()     # KernelBook format: [[args], {kwargs}]
+
         torch.manual_seed(0)
         model = namespace[module_name](*args, **kwargs).eval()   # eval(): dropout off
         weights = [t for t in [*model.parameters(), *model.buffers()] if t.is_floating_point()]
         if any(not torch.isfinite(t).all() for t in weights):
             return "init: non-finite weights (uninitialized memory?)"
+        
         torch.manual_seed(1)
         inputs = namespace["get_inputs"]()
+
         with torch.no_grad():                             # clone: forward may modify inputs in place
             first = model(*[x.clone() if torch.is_tensor(x) else x for x in inputs])
             second = model(*[x.clone() if torch.is_tensor(x) else x for x in inputs])
+
     except Exception as e:                                # any crash, incl. missing imports, no network
         return f"exec: {type(e).__name__}: {str(e)[:100]}"
     if not isinstance(first, torch.Tensor):

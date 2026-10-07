@@ -10,7 +10,7 @@ readme = "README.md"
 # 3.12: supported by torch, vLLM, prime-rl and verifiers; matches the Python already on this Mac.
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "modal",            # step 0: GPUs and sandboxes for everything that needs CUDA
+    "modal",            # GPU work only (steps 3+): smoke test, grading, validation, RL. CPU work runs on the Mac.
     "datasets",         # step 1: downloads GPUMODE/KernelBook from Hugging Face
     # step 2: runs reference modules on CPU for the F5 check. 2.5.1 = the version KernelBook's
     # oracles were generated with. Needs an ARM64 Python on Apple Silicon (see .python-version).
