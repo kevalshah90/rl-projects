@@ -53,7 +53,11 @@ def check_versions() -> dict:
 
 
 
-@app.function(image=image, gpu="L4", timeout=300)
+# max_containers=1: all rows run one after another in a single L4 container. Each row takes
+# seconds, while starting a container (image, torch import, Triton setup) takes tens of
+# seconds, so one container is cheapest. Without it, .map() would start one GPU per row.
+# timeout is per row; 600 s leaves room for the first row's one-time Triton compilation.
+@app.function(image=image, gpu="L4", timeout=600, max_containers=1)
 def check_oracle(row: dict) -> dict:
     """Check 2 (and 3): does KernelBook's own Triton answer match the PyTorch code it
     replaces, on a GPU, inside our image?
@@ -149,7 +153,7 @@ def main() -> None:
     row0 = next(r for r in rows if r["uuid"] == 0)
     sample = random.Random(SAMPLE_SEED).sample([r for r in rows if r["uuid"] != 0], SAMPLE_SIZE)
 
-    # 2 + 3: row 0 first, then the sample, all in parallel on L4s
+    # 2 + 3: row 0 first, then the sample, one after another in a single L4 container
     results = list(check_oracle.map([row0, *sample], return_exceptions=True))
     OUT.write_text("".join(json.dumps(r if isinstance(r, dict) else {"error": repr(r)}) + "\n"
                            for r in results))
