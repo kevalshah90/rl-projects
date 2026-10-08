@@ -15,6 +15,8 @@ dependencies = [
     # step 2: runs reference modules on CPU for the F5 check. 2.5.1 = the version KernelBook's
     # oracles were generated with. Needs an ARM64 Python on Apple Silicon (see .python-version).
     "torch==2.5.1",
+    "tomli_w",          # step 5: writes each task's task.toml (stdlib tomllib only reads TOML)
+    "harbor[modal]",    # step 6: runs task folders as real trials (agent + separate grader) on Modal
 ]
 
 [dependency-groups]

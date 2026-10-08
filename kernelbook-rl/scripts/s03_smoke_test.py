@@ -6,7 +6,7 @@ Writes: data/smoke_s03.jsonl, one result per checked row.
 
 Checks, in order:
   1. versions   CUDA visible, torch 2.5.1, triton 3.1.0
-  2. row 0      KernelBook's oracle (SumAggregatorNew) matches the reference on the GPU
+  2. row 0      KernelBook's oracle (SumAggregatorNew) matches the reference python / pytorch code on the GPU
   3. sample     the same check on 20 random kept rows (fixed seed: reproducible)
 
 The oracle check copies the reference's weights into the oracle module (load_state_dict),
@@ -122,8 +122,12 @@ def check_oracle(row: dict) -> dict:
         torch.manual_seed(0)
         ref_model = getattr(ref, row["module_name"])(*args, **kwargs).cuda().eval()
         oracle_model = getattr(oracle, row["module_name"] + "New")(*args, **kwargs).cuda().eval()
-        # Copy weights reference -> oracle. strict=False: report name mismatches instead of
-        # crashing, since whether the names line up is exactly what we want to learn here.
+
+        """
+        Copy weights so both models start from identical parameters: same seed isn't enough
+        because the two constructors call different ops and draw a different number of random values.
+        strict=False: log name mismatches in missing/unexpected_keys instead of raising.
+        """
         keys = oracle_model.load_state_dict(ref_model.state_dict(), strict=False)
         result["missing_keys"], result["unexpected_keys"] = list(keys.missing_keys), list(keys.unexpected_keys)
 
