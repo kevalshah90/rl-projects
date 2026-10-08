@@ -23,7 +23,7 @@ Each step adds one component and ends with a check. Run commands from this folde
 | 0 | Project skeleton | Mac | `uv sync` then `uv run python -c "import modal, kernel_env"` and `uv run modal token info` (login check only, starts nothing) |
 | 1 | `kernel_env/data.py` (loading), `scripts/s01_profile.py` | Mac | `uv run python scripts/s01_profile.py` writes `data/profile_report.md` |
 | 2 | `kernel_env/data.py` (filters), `kernel_env/exec_worker.py`, `scripts/s02_filter.py`, `tests/test_data.py` | Mac CPU | `uv run pytest tests/test_data.py`, then `uv run python scripts/s02_filter.py` writes `data/kept.jsonl` + `data/dropped.jsonl` |
-| 3 | `docker/base.Dockerfile`, `../.github/workflows/kernel-env-base-image.yml`, `kernel_env/config.py`, `scripts/s03_smoke_test.py` | GitHub Actions (build), Modal L4 (test) | Image `<user>/kernel-env-base:torch2.5.1` on Docker Hub; `uv run modal run scripts/s03_smoke_test.py` writes `data/smoke_s03.jsonl` |
+| 3 | `docker/base.Dockerfile`, `../.github/workflows/kernel-env-base-image.yml`, `kernel_env/config.py`, `scripts/s03_smoke_test.py` | GitHub Actions (build), Modal L4 (test) | Image `<user>/kernel-env-base:torch2.5.1-r2` on Docker Hub; `uv run modal run scripts/s03_smoke_test.py` writes `data/smoke_s03.jsonl` |
 
 ## Setup notes
 

@@ -34,6 +34,7 @@ jobs:
           file: kernelbook-rl/docker/base.Dockerfile
           platforms: linux/amd64             # Modal's GPU machines are x86_64
           push: true
-          # The tag names the pinned torch version, so a future torch bump gets a new tag
-          # instead of silently changing the image existing tasks point at.
-          tags: ${{ vars.DOCKERHUB_USERNAME }}/kernel-env-base:torch2.5.1
+          # Tag = torch pin + revision. Bump the revision with every Dockerfile change (and in
+          # kernelbook-rl/kernel_env/config.py): Modal caches images by name, and tasks
+          # pointing at an old tag must keep getting the image they were validated with.
+          tags: ${{ vars.DOCKERHUB_USERNAME }}/kernel-env-base:torch2.5.1-r2
