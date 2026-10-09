@@ -24,13 +24,13 @@ import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from pathlib import Path
 
+from kernel_env.config import DATA
 from kernel_env.data import Row, load_rows, source_key, static_reason, structure_key
 from kernel_env.exec_worker import ROW_TIMEOUT_SEC
 
-KEPT = Path("data/kept.jsonl")
-DROPPED = Path("data/dropped.jsonl")
+KEPT = DATA / "kept.jsonl"
+DROPPED = DATA / "dropped.jsonl"
 KERNELBENCH_LEVELS = ("level_1", "level_2", "level_3", "level_4")
 
 # ---------- F5: run rows in worker subprocesses ----------

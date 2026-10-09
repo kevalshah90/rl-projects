@@ -20,7 +20,7 @@ from pathlib import Path
 
 import modal
 
-from kernel_env.config import BASE_IMAGE
+from kernel_env.config import BASE_IMAGE, DATA
 
 SAMPLE_SIZE = 20        # rows checked beyond row 0; small enough to be cheap, wide enough to catch systemic failures
 SAMPLE_SEED = 0         # fixed so re-runs always check the same rows (reproducible baseline)
@@ -29,7 +29,7 @@ SAMPLE_SEED = 0         # fixed so re-runs always check the same rows (reproduci
 # Must match the grader's torch.allclose() exactly, or a kernel can pass smoke but fail training.
 RTOL = 1e-3             # relative tolerance: |got - expected| <= atol + rtol * |expected|
 ATOL = 1e-5             # absolute tolerance: floor for near-zero values where rtol collapses to 0
-OUT = Path("data/smoke_s03.jsonl")   # one JSON result per row; inspect manually or diff across runs
+OUT = DATA / "smoke_s03.jsonl"   # one JSON result per row; inspect manually or diff across runs
 
 app = modal.App("kernelbook-s03-smoke")
 # The same image every task container uses, plus our kernel_env/ package added by Modal at
@@ -153,7 +153,7 @@ def check_oracle(row: dict) -> dict:
 def main() -> None:
     print("1. versions:", check_versions.remote())
 
-    rows = [json.loads(line) for line in open("data/kept.jsonl")]
+    rows = [json.loads(line) for line in open(DATA / "kept.jsonl")]
     row0 = next(r for r in rows if r["uuid"] == 0)
     sample = random.Random(SAMPLE_SEED).sample([r for r in rows if r["uuid"] != 0], SAMPLE_SIZE)
 

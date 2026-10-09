@@ -23,12 +23,12 @@ from string import Template
 
 import tomli_w
 
-from kernel_env.config import BASE_IMAGE
+from kernel_env.config import BASE_IMAGE, DATA, TASKS
 
-TASKS = Path("tasks")
 INSTRUCTION = Template(Path("templates/instruction.md").read_text())   # uses ${class_name}
 TEST_SH = Path("templates/test.sh").read_text()                        # same for every task
-GRADER_FILES = ["__init__.py", "guard.py", "triton_hook.py", "grade.py"]  # all grade.py needs
+GRADER_FILES = ["__init__.py", "guard.py", "triton_hook.py", "grade.py"]  # all grade.py needs -> tests/
+TOOL_FILES = GRADER_FILES + ["mcp_tools.py"]      # the agent's check tool calls grade() -> environment/.kernel_tools/
 
 
 def task_id(row: dict) -> str:
@@ -47,6 +47,16 @@ def task_toml(row: dict) -> dict:
         "environment": {                                  # the agent's container
             "docker_image": BASE_IMAGE, "workdir": "/workspace", "network_mode": "no-network",
             "gpus": 1, "gpu_types": ["L4"],               # so the agent can run its own kernel
+            # The agent's `check` tool. stdio = the harness starts it as a child process inside
+            # this sandbox (no network, no extra container). The module name goes in as an
+            # argument, so it doesn't depend on how the harness passes env vars.
+            # The harness exposes this as the tool `kernel-tools_check` (<server name>_<tool name>);
+            # templates/instruction.md names it exactly, so keep the two in sync.
+            "mcp_servers": [{
+                "name": "kernel-tools", "transport": "stdio", "command": "python",
+                "args": ["/workspace/.kernel_tools/kernel_env/mcp_tools.py",
+                         "--module-name", row["module_name"]],
+            }],
         },
         "verifier": {
             "timeout_sec": 600,
@@ -84,6 +94,10 @@ def make_task(row: dict) -> Path:
     grader.mkdir(exist_ok=True)
     for name in GRADER_FILES:
         shutil.copy(Path("kernel_env") / name, grader / name)
+    tools = task_dir / "environment" / ".kernel_tools" / "kernel_env"   # uploaded to /workspace/.kernel_tools
+    tools.mkdir(parents=True)
+    for name in TOOL_FILES:
+        shutil.copy(Path("kernel_env") / name, tools / name)
     return task_dir
 
 
@@ -92,9 +106,12 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="only the first N kept rows")
     limit = parser.parse_args().limit
 
-    rows = [json.loads(line) for line in open("data/kept.jsonl")][:limit]
-    if TASKS.exists():
-        shutil.rmtree(TASKS)                              # regenerate from scratch: no stale tasks
+    rows = [json.loads(line) for line in open(DATA / "kept.jsonl")][:limit]
+    # Regenerate from scratch (no stale tasks) by emptying tasks/, not deleting it: tasks/ is
+    # a symlink into ~/kernelbook-rl-work, and rmtree refuses to delete through a symlink.
+    TASKS.mkdir(exist_ok=True)
+    for old in TASKS.iterdir():
+        shutil.rmtree(old) if old.is_dir() else old.unlink()
     task_dirs = [make_task(row) for row in rows]
 
     # Harbor registry: one dataset; a task without git_url is loaded from its local path.

@@ -242,6 +242,7 @@ def structure_key(code: str, class_name: str) -> str | None:
     return hashlib.sha256(ast.unparse(cls).encode()).hexdigest()
 
 
+
 # =====================================================================================
 # 3. Filters. Each returns None to KEEP the row, or a reason string to DROP it.
 #    Reasons start with a short category ("license:", "inputs:") so they can be counted.

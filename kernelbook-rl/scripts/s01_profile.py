@@ -14,11 +14,11 @@ import ast
 import hashlib
 import math
 from collections import Counter
-from pathlib import Path
 
+from kernel_env.config import DATA
 from kernel_env.data import Row, dotted, input_shapes, load_rows, parse, top_level
 
-OUT = Path("data/profile_report.md")
+OUT = DATA / "profile_report.md"
 
 
 # ---------- small helpers (the code-parsing ones live in kernel_env/data.py) ----------

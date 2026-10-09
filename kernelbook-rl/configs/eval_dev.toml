@@ -1,0 +1,40 @@
+# Step 9 / 14: evaluation on the held-out DEV split (54 tasks, 47 module groups not in train).
+# Run it twice with this exact file: once on the untrained model (the "before" score) and once
+# on the RL-trained model (the "after" score). Never change the environment, prompt or task
+# selection based on dev results: that would make dev stop measuring held-out performance.
+# Run:  set -a; source .env; set +a      (VLLM_API_KEY, PRIME_API_KEY, SSL_CERT_FILE)
+#       uv run vf-eval @ configs/eval_dev.toml
+#       uv run python scripts/s09_baseline.py work.nosync/outputs/eval_dev/<run>
+# Output: work.nosync/outputs/eval_dev/<run>/traces.jsonl  (one JSON line per episode)
+
+model = "Qwen/Qwen3.5-9B"        # after RL: the trained checkpoint's served name
+num_rollouts = 4                 # attempts per task: report mean pass rate (pass@1) over 216 episodes
+max_concurrent = 4               # episodes in flight = agent L4 sandboxes at once. GPUs at peak:
+                                 # 1 vLLM (H100) + 4 agents + ~1 grader = ~6 of the 10-GPU Modal limit
+push = false
+output_dir = "work.nosync/outputs/eval_dev"
+
+[client]
+base_url = "https://kevalshah90--kernelbook-vllm-serve.modal.run/v1"
+api_key_var = "VLLM_API_KEY"
+
+[sampling]
+temperature = 1.0                # same as training, so before/after numbers compare directly
+max_tokens = 8192
+
+# No [select]: all 54 dev tasks, every time.
+
+[env.taskset]
+id = "kernelbook_taskset"
+registry_path = "work.nosync/tasks/registry-dev.json"
+dataset = "kernelbook-dev"
+ignore_timeouts = false
+
+[env.agent]
+max_turns = 30                   # same as baseline_train.toml (and later RL)
+
+[env.agent.harness]
+id = "bash"
+
+[env.agent.runtime]
+type = "modal"

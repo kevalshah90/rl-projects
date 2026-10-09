@@ -17,6 +17,8 @@ dependencies = [
     "torch==2.5.1",
     "tomli_w",          # step 5: writes each task's task.toml (stdlib tomllib only reads TOML)
     "harbor[modal]",    # step 6: runs task folders as real trials (agent + separate grader) on Modal
+    # step 9: runs agent episodes (vf-eval) over our Harbor tasks. Source: see [tool.uv.sources].
+    "verifiers[harbor,modal]",
 ]
 
 [dependency-groups]
@@ -36,3 +38,8 @@ packages = ["kernel_env"]
 # cbor2 >=6 requires Rust to build from source and has no prebuilt wheel for this platform.
 # Pinning to <6 (pure Python) is safe — modal only needs the cbor2 API, not the Rust speedups.
 constraint-dependencies = ["cbor2<6"]
+
+[tool.uv.sources]
+# verifiers from git, pinned to a commit: PyPI's 0.3.1 pins harbor==0.21.0 (we use 0.24.0);
+# main pins harbor 0.24.0 and is what prime-rl uses.
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers", rev = "da75527" }

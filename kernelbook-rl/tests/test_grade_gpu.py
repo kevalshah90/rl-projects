@@ -40,7 +40,7 @@ import json
 
 import modal
 
-from kernel_env.config import BASE_IMAGE
+from kernel_env.config import BASE_IMAGE, DATA
 
 app = modal.App("kernelbook-test-grade")
 image = modal.Image.from_registry(BASE_IMAGE).add_local_python_source("kernel_env")
@@ -95,7 +95,7 @@ def grade_cases(cases: list[dict]) -> list[dict]:
 
 @app.local_entrypoint()
 def main() -> None:
-    rows = {r["uuid"]: r for r in map(json.loads, open("data/kept.jsonl"))}
+    rows = {r["uuid"]: r for r in map(json.loads, open(DATA / "kept.jsonl"))}
     cases = [{"name": n, "reference": rows[0]["python_code"], "solution": s,
               "module_name": "SumAggregator", "expect": e} for n, s, e in SUM_CASES]
     # KernelBook oracles: MyLinear has weights (should pass); MatchModule's oracle is wrong (step 3).

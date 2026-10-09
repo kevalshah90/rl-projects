@@ -7,4 +7,14 @@ Write /workspace/solution.py defining `class ${class_name}New(nn.Module)`:
   torch.compile is not allowed.
 - Output must match the reference (rtol 1e-3, atol 1e-5) on the inputs from get_inputs().
 
-You can run Python in /workspace to test your kernel. Only /workspace/solution.py is graded.
+Workflow:
+1. Read /workspace/reference.py.
+2. Write /workspace/solution.py.
+3. Test it by calling the `kernel-tools_check` tool. It is a tool call, like `bash`, not a
+   file or a command. It runs the final grader on your current solution.py and reports the
+   first gate that fails and why (gates: exists, guard, parse, weights, runs, uses_triton,
+   correct).
+4. Fix what it reports, then call `kernel-tools_check` again. Repeat until it returns
+   reward 1.0. Prefer small edits over rewriting the whole file.
+
+You can also run Python in /workspace. Only /workspace/solution.py is graded.
