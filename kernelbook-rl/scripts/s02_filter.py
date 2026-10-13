@@ -40,10 +40,22 @@ BATCH = 25                                    # rows per subprocess: amortizes t
 
 
 def run_batch(batch: list[Row]) -> dict[int, str | None]:
-    """Run one batch in a fresh worker process. Returns {uuid: reason} for rows that reported."""
+    """Run one batch in a fresh worker process. Returns {uuid: reason} for rows that reported.
+
+    Input:   three Rows with uuid 42, 77, 103 (the worker gets their uuid, python_code, module_name)
+
+    Output:  {42: None,                                                    # passed
+              77: "exec: ConnectionRefusedError: network disabled in exec_check",
+              103: "exec: timeout after 30 s"}
+
+    If the worker dies after reporting only row 42, the output is just {42: None}.
+    """
+
     payload = json.dumps([{"uuid": r.uuid, "python_code": r.python_code,
                            "module_name": r.module_name} for r in batch])
+    
     env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}  # 1 thread per worker
+    
     with tempfile.TemporaryDirectory() as scratch:          # rows that write files write here
         try:
             proc = subprocess.run([sys.executable, "-m", "kernel_env.exec_worker"],
@@ -65,15 +77,25 @@ def run_batch(batch: list[Row]) -> dict[int, str | None]:
 
 def exec_check_all(rows: list[Row]) -> dict[int, str | None]:
     """F5 for every row, in parallel batches. A row that never reported (its worker crashed
-    or hung on it or an earlier row) is retried ALONE, so one bad row can't sink its batch."""
+    or hung on it or an earlier row) is retried ALONE, so one bad row can't sink its batch.
+
+    Input:   [Row(uuid=42, ...), Row(uuid=77, ...), Row(uuid=103, ...)]   (e.g. 3 rows, 1 batch)
+
+    Output:  {42: None, 77: "exec: ConnectionRefusedError: ...", 103: "exec: worker crashed or hung"}
+             (103 never reported in the batch, and its solo retry never reported either)
+    """
+
     batches = [rows[i:i + BATCH] for i in range(0, len(rows), BATCH)]
     results: dict[int, str | None] = {}
+
     with ThreadPoolExecutor(WORKERS) as pool:                 # threads just wait on subprocesses
         for done, batch_results in enumerate(pool.map(run_batch, batches), 1):
             results.update(batch_results)
             print(f"\r  exec_check: {done}/{len(batches)} batches", end="", flush=True)
+
     missing = [r for r in rows if r.uuid not in results]
     print(f"\n  retrying {len(missing)} unreported rows one at a time")
+    
     with ThreadPoolExecutor(WORKERS) as pool:
         for row, single in zip(missing, pool.map(lambda r: run_batch([r]), missing)):
             results[row.uuid] = single.get(row.uuid, "exec: worker crashed or hung")
@@ -82,7 +104,12 @@ def exec_check_all(rows: list[Row]) -> dict[int, str | None]:
 # ---------- F6 helper ----------
 
 def kernelbench_keys() -> set[str]:
-    """structure_key of every KernelBench problem (its class is always named `Model`)."""
+    """structure_key of every KernelBench problem (its class is always named `Model`).
+
+    Input:   none (downloads levels 1-4 of ScalingIntelligence/KernelBench)
+    Output:  {"c71b...", "09ae...", ...}   one 64-char SHA-256 hex digest per problem
+             (problems with no `Model` class are skipped; identical problems share one key)
+    """
     from datasets import load_dataset
     keys = set()
     for level in KERNELBENCH_LEVELS:
@@ -94,6 +121,16 @@ def kernelbench_keys() -> set[str]:
 # ---------- main ----------
 
 def main() -> None:
+    """Run all filters and write kept.jsonl / dropped.jsonl.
+
+    Input:   none (loads the dataset itself)
+    Output:  data/kept.jsonl     {"uuid": 42, "module_name": "SumAggregator", "python_code": "...", ...}
+             data/dropped.jsonl  {"uuid": 7, "module_name": "Foo", "reason": "license: none listed"}
+                                 {"uuid": 9, "module_name": "Bar", "reason": "duplicate: same code as uuid 3"}
+             stdout summary:
+                 Kept N of M rows -> data/kept.jsonl
+                   dropped  <count>  <category>      (license, length, inputs, duplicate, exec, ...)
+    """
     rows = sorted(load_rows(), key=lambda r: r.uuid)   # lowest uuid first: it wins duplicates
     dropped: dict[int, str] = {}                      # uuid -> reason
 

@@ -8,6 +8,20 @@ Why a separate process: exec_check() runs untrusted dataset code. In a child pro
 crash, a hang or a row that pollutes global state only takes down this worker, never
 the filter script. The parent re-runs any row that didn't report back, alone.
 This contains accidents; it is NOT a security sandbox (no network or file isolation).
+
+Example
+-------
+Input (stdin), python_code abbreviated:
+    [
+      {"uuid": 42,  "module_name": "SumAggregator", "python_code": "class SumAggregator(nn.Module): ..."},
+      {"uuid": 77,  "module_name": "Downloader",    "python_code": "... resnet18(pretrained=True) ..."},
+      {"uuid": 103, "module_name": "Spinner",       "python_code": "... while True: pass ..."}
+    ]
+
+Output (stdout), one line per row as each finishes:
+    {"uuid": 42, "reason": null}                                                          # passed
+    {"uuid": 77, "reason": "exec: ConnectionRefusedError: network disabled in exec_check"}  # tried to download
+    {"uuid": 103, "reason": "exec: timeout after 30 s"}                                   # hung
 """
 
 import json

@@ -32,48 +32,86 @@ TOOL_FILES = GRADER_FILES + ["mcp_tools.py"]      # the agent's check tool calls
 
 
 def task_id(row: dict) -> str:
+    """Folder name for a row: zero-padded uuid + lowercased class name.
+
+    Input:   {"uuid": 42, "module_name": "SumAggregator", ...}
+    Output:  "kernelbook-00042-sumaggregator"
+    """
     return f"kernelbook-{row['uuid']:05d}-{row['module_name'].lower()}"
 
 
 def task_toml(row: dict) -> dict:
-    """Harbor's task.toml as a plain dict. Keys follow Harbor's TaskConfig."""
+    """Harbor's task.toml as a plain dict. Keys follow Harbor's TaskConfig.
+
+    Input:   {"uuid": 42, "module_name": "SumAggregator", "licenses": ["Apache-2.0"], ...}
+
+    Output (abridged):
+        {"schema_version": "1.4",
+         "artifacts": ["/workspace/solution.py"],
+         "task": {"name": "kernelbook/00042-sumaggregator"},
+         "metadata": {"source": "GPUMODE/KernelBook", "uuid": 42,
+                      "module_name": "SumAggregator", "license": "Apache-2.0"},
+         "agent": {"timeout_sec": 900},
+         "environment": {"docker_image": BASE_IMAGE, "gpus": 1, "gpu_types": ["L4"], ...,
+                         "mcp_servers": [{"name": "kernel-tools", ...,
+                                          "args": [".../mcp_tools.py", "--module-name", "SumAggregator"]}]},
+         "verifier": {"timeout_sec": 600, "environment_mode": "separate",
+                      "env": {"MODULE_NAME": "SumAggregator"}}}
+    """
     return {
-        "schema_version": "1.4",
-        "artifacts": ["/workspace/solution.py"],          # the only file copied to the grader
-        "task": {"name": f"kernelbook/{row['uuid']:05d}-{row['module_name'].lower()}"},
-        "metadata": {"source": "GPUMODE/KernelBook", "uuid": row["uuid"],
-                     "module_name": row["module_name"], "license": row["licenses"][0]},
-        "agent": {"timeout_sec": 900},                    # 15 min cap per episode
-        "environment": {                                  # the agent's container
-            "docker_image": BASE_IMAGE, "workdir": "/workspace", "network_mode": "no-network",
-            "gpus": 1, "gpu_types": ["L4"],               # so the agent can run its own kernel
-            # The agent's `check` tool. stdio = the harness starts it as a child process inside
-            # this sandbox (no network, no extra container). The module name goes in as an
-            # argument, so it doesn't depend on how the harness passes env vars.
-            # The harness exposes this as the tool `kernel-tools_check` (<server name>_<tool name>);
-            # templates/instruction.md names it exactly, so keep the two in sync.
-            "mcp_servers": [{
-                "name": "kernel-tools", "transport": "stdio", "command": "python",
-                "args": ["/workspace/.kernel_tools/kernel_env/mcp_tools.py",
-                         "--module-name", row["module_name"]],
-            }],
-        },
-        "verifier": {
-            "timeout_sec": 600,
-            "environment_mode": "separate",               # grade in a fresh copy of the container
-            "env": {"MODULE_NAME": row["module_name"]},   # read by kernel_env.grade
-        },
+            "schema_version": "1.4",
+            "artifacts": ["/workspace/solution.py"],          # the only file copied to the grader
+            "task": {"name": f"kernelbook/{row['uuid']:05d}-{row['module_name'].lower()}"},
+            "metadata": {"source": "GPUMODE/KernelBook", "uuid": row["uuid"],
+                        "module_name": row["module_name"], "license": row["licenses"][0]},
+            "agent": {"timeout_sec": 900},                    # 15 min cap per episode
+            "environment": {                                  # the agent's container
+                "docker_image": BASE_IMAGE, "workdir": "/workspace", "network_mode": "no-network",
+                "gpus": 1, "gpu_types": ["L4"],               # so the agent can run its own kernel
+                # The agent's `check` tool. stdio = the harness starts it as a child process inside
+                # this sandbox (no network, no extra container). The module name goes in as an
+                # argument, so it doesn't depend on how the harness passes env vars.
+                # The harness exposes this as the tool `kernel-tools_check` (<server name>_<tool name>);
+                # templates/instruction.md names it exactly, so keep the two in sync.
+                "mcp_servers": [{
+                    "name": "kernel-tools", "transport": "stdio", "command": "python",
+                    "args": ["/workspace/.kernel_tools/kernel_env/mcp_tools.py",
+                            "--module-name", row["module_name"]],
+                }],
+            },
+            "verifier": {
+                "timeout_sec": 600,
+                "environment_mode": "separate",               # grade in a fresh copy of the container
+                "env": {"MODULE_NAME": row["module_name"]},   # read by kernel_env.grade
+            },
     }
 
 
 def solve_sh(triton_code: str) -> str:
-    """Oracle script. Quoted heredoc = no bash expansion; the delimiter never occurs in code."""
+    """Oracle script. Quoted heredoc = no bash expansion; the delimiter never occurs in code.
+
+    Input:   "class SumAggregatorNew(nn.Module): ..."      (the row's triton_code)
+    Output:  #!/bin/bash
+             cat > /workspace/solution.py <<'KERNELBOOK_ORACLE_EOF'
+             class SumAggregatorNew(nn.Module): ...
+             KERNELBOOK_ORACLE_EOF
+    """
     return ("#!/bin/bash\n"
             "cat > /workspace/solution.py <<'KERNELBOOK_ORACLE_EOF'\n"
             f"{triton_code}\nKERNELBOOK_ORACLE_EOF\n")
 
 
 def make_task(row: dict) -> Path:
+    """Write one task folder for a row and return its path.
+
+    Input:   one record from data/kept.jsonl, e.g. {"uuid": 42, "module_name": "SumAggregator", ...}
+    Output:  tasks/kernelbook-00042-sumaggregator/   (the returned Path), containing:
+                 task.toml  instruction.md
+                 environment/reference.py  environment/solution.py (empty)
+                 environment/.kernel_tools/kernel_env/{__init__,guard,triton_hook,grade,mcp_tools}.py
+                 tests/reference.py  tests/test.sh  tests/kernel_env/{__init__,guard,triton_hook,grade}.py
+                 solution/solve.sh
+    """
     task_dir = TASKS / task_id(row)
     files = {
         "task.toml": tomli_w.dumps(task_toml(row)),
@@ -102,6 +140,15 @@ def make_task(row: dict) -> Path:
 
 
 def main() -> None:
+    """Regenerate every task folder and the registry.
+
+    Input:   command line  `--limit 20`  (optional), plus data/kept.jsonl
+    Output:  tasks/<task-id>/ for each of the first 20 kept rows, and tasks/registry.json:
+                 [{"name": "kernelbook", "version": "0.1", "description": "...",
+                   "tasks": [{"name": "kernelbook-00042-sumaggregator",
+                              "path": "/abs/path/tasks/kernelbook-00042-sumaggregator"}, ...]}]
+             stdout: "20 tasks -> tasks/  (+ registry.json)"
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None, help="only the first N kept rows")
     limit = parser.parse_args().limit

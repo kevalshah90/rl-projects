@@ -2,6 +2,7 @@
 Load GPUMODE/KernelBook as typed rows, and decide which rows become tasks.
 
 Sections:  1. loading (step 1)   2. static code analysis   3. filters (step 2)
+
 Runs on: the Mac (scripts/ and tests/), no GPU. Everything here only PARSES dataset code,
 except exec_check() at the bottom, which runs it and is only ever called in a worker subprocess.
 
@@ -155,7 +156,11 @@ TENSOR_MAKERS = {"rand", "randn", "ones", "zeros", "empty", "full", "randint"}
 
 
 def parse(code: str) -> ast.Module | None:
-    """Syntax tree of the code, or None if it isn't valid Python."""
+    """Syntax tree of the code, or None if it isn't valid Python.
+
+    parse("x = 1")        # -> <ast.Module>
+    parse("def broken(")  # -> None
+    """
     try:
         return ast.parse(code)
     except SyntaxError:
@@ -163,12 +168,25 @@ def parse(code: str) -> ast.Module | None:
 
 
 def top_level(tree: ast.Module, kind: type, name: str):
-    """Find a top-level function or class by name (kind = ast.FunctionDef or ast.ClassDef)."""
+    """Find a top-level function or class by name (kind = ast.FunctionDef or ast.ClassDef).
+
+    tree = parse("class Foo: pass\\ndef get_inputs(): return []")
+    top_level(tree, ast.ClassDef, "Foo")             # -> <ast.ClassDef node for Foo>
+    top_level(tree, ast.FunctionDef, "get_inputs")   # -> <ast.FunctionDef node for get_inputs>
+    top_level(tree, ast.ClassDef, "Bar")             # -> None  (no such class)
+    """
     return next((n for n in tree.body if isinstance(n, kind) and n.name == name), None)
 
 
 def dotted(node: ast.AST) -> str | None:
-    """Turn a call target into a dotted name: torch.nn.functional.relu -> 'F.relu'."""
+    """Turn a call target into a dotted name: torch.nn.functional.relu -> 'F.relu'.
+
+    Input is the `.func` node of a call, e.g. ast.parse("...", mode="eval").body.func:
+    torch.nn.functional.relu(x)   # -> "F.relu"
+    torch.nn.Linear(4, 4)         # -> "nn.Linear"
+    torch.rand([4, 4])            # -> "torch.rand"
+    x.view(1)[0].sum()            # -> None  (chain starts at a call/subscript, not a plain name)
+    """
     parts = []
     while isinstance(node, ast.Attribute):          # walk a.b.c from the right
         parts.append(node.attr)
@@ -181,10 +199,21 @@ def dotted(node: ast.AST) -> str | None:
 
 
 def input_shapes(tree: ast.Module) -> list[tuple[int, ...]] | None:
-    """Shapes of the tensors created in get_inputs(), or None if we can't read them statically."""
+    """Shapes of the tensors created in get_inputs(), or None if we can't read them statically.
+
+    Input is the parsed tree of:
+        def get_inputs():
+            return [torch.rand([4, 4]), torch.rand(2, 3), torch.randint(0, 9, (5,))]
+    # -> [(4, 4), (2, 3), (5,)]
+
+    def get_inputs(): return [torch.rand([n, n])]   # -> None  (n is a variable)
+    (no get_inputs function at all)                 # -> None
+    """
+    
     fn = top_level(tree, ast.FunctionDef, "get_inputs")
     if fn is None:
         return None
+    
     shapes = []
     for node in ast.walk(fn):
         name = dotted(node.func) if isinstance(node, ast.Call) else None
@@ -207,7 +236,13 @@ def input_shapes(tree: ast.Module) -> list[tuple[int, ...]] | None:
 
 
 def _strip_docstrings(tree: ast.AST) -> ast.AST:
-    """Remove docstrings in place. (Comments never reach the tree, so they're already gone.)"""
+    """Remove docstrings in place. (Comments never reach the tree, so they're already gone.)
+
+    tree = parse('def f():\\n    "adds one"\\n    return 1')
+    ast.unparse(_strip_docstrings(tree))
+    # -> "def f():\\n    return 1"
+    (a function whose body was only a docstring becomes `pass`)
+    """
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             body = node.body
@@ -220,16 +255,30 @@ def _strip_docstrings(tree: ast.AST) -> ast.AST:
 def source_key(code: str) -> str:
     """Fingerprint for duplicate detection: two rows that differ only in comments,
     docstrings or formatting get the same key, because ast.unparse re-prints the tree
-    in one canonical style."""
+    in one canonical style.
+
+    a = "def f(x):\\n    # add one\\n    return x+1"
+    b = 'def f(x):\\n    "adds one"\\n    return x + 1'
+    source_key(a) == source_key(b)   # -> True
+    source_key(a)                    # -> "a3f9..."  (64-char SHA-256 hex digest)
+    source_key("def f(x): return x") # -> a different digest
+    """
     tree = parse(code)
-    text = ast.unparse(_strip_docstrings(tree)) if tree else code
+    text =ast.unparse(_strip_docstrings(tree)) if tree else code
     return hashlib.sha256(text.encode()).hexdigest()
 
 
 def structure_key(code: str, class_name: str) -> str | None:
     """Fingerprint of the module class alone, renamed to `Model`.
     KernelBench always names its class `Model`; renaming ours lets `class Foo` and
-    `class Model` match when everything else in the class is identical."""
+    `class Model` match when everything else in the class is identical.
+
+    a = "class Foo(nn.Module):\\n    def forward(self, x): return x * 2"
+    b = "class Model(nn.Module):\\n    def forward(self, x): return x * 2"
+    structure_key(a, "Foo") == structure_key(b, "Model")   # -> True
+    structure_key(a, "Foo")                                # -> "c71b..."  (SHA-256 hex digest)
+    structure_key(a, "Missing")                            # -> None  (no such class)
+    """
     tree = parse(code)
     cls = top_level(tree, ast.ClassDef, class_name) if tree else None
     if cls is None:
@@ -298,6 +347,29 @@ def exec_check(python_code: str, module_name: str) -> str | None:
     The module is built ONCE. Weights made with torch.empty / torch.Tensor(n) are
     uninitialized memory that no seed controls, so the grader copies the reference's
     weights into the solution instead of rebuilding them; this check mirrors that.
+
+    Example
+    -------
+    Input:
+        python_code = '''
+        import torch
+        import torch.nn as nn
+
+        class SumAggregator(nn.Module):
+            def forward(self, x):
+                return x.sum(dim=0)
+
+        def get_inputs():
+            return [torch.rand([4, 4])]
+
+        def get_init_inputs():
+            return [[], {}]
+        '''
+        exec_check(python_code, "SumAggregator")
+
+    Output:
+        None    # builds, forward returns a finite 4-element tensor, both calls identical
+                # (a failure returns a string, e.g. "output: contains NaN or inf")
     """
 
     import torch   # imported here: only the worker process needs torch

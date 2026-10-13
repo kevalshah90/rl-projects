@@ -20,7 +20,6 @@ from kernel_env.data import Row, dotted, input_shapes, load_rows, parse, top_lev
 
 OUT = DATA / "profile_report.md"
 
-
 # ---------- small helpers (the code-parsing ones live in kernel_env/data.py) ----------
 
 def module_ops(tree: ast.Module, class_name: str) -> set[str]:
