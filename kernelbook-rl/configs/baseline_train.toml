@@ -1,0 +1,50 @@
+# Step 9: baseline on TRAIN tasks -> which tasks are trainable (0 < pass rate < 1).
+# The untrained model (Qwen3.5-9B) attempts each task num_rollouts times. Each episode:
+#   1. a Modal sandbox (L4 GPU) starts from the task's environment
+#   2. the bash harness runs a multi-turn loop: model <-> shell + the MCP `kernel-tools_check` tool
+#   3. solution.py is copied out, then graded by tests/test.sh in a FRESH sandbox
+#   4. reward.json -> trace.rewards
+# Only train tasks decide what we train on; dev is for evaluation (configs/eval_dev.toml).
+# Run:  set -a; source .env; set +a      (VLLM_API_KEY, PRIME_API_KEY, SSL_CERT_FILE)
+#       uv run vf-eval @ configs/baseline_train.toml
+#       uv run python scripts/s09_baseline.py      (summarizes the newest run)
+# Output: work.nosync/outputs/baseline_train/<run>/traces.jsonl  (one JSON line per episode)
+
+model = "Qwen/Qwen3.5-9B"
+num_rollouts = 4                 # attempts per task: pass rate in steps of 1/4 (see below)
+max_concurrent = 4               # episodes in flight = agent L4 sandboxes at once. GPUs at peak:
+                                 # 1 vLLM (H100) + 4 agents + ~1 grader = ~6 of the 10-GPU Modal limit
+push = false                     # keep results local (no upload to the Prime Hub)
+output_dir = "work.nosync/outputs/baseline_train"
+
+[client]                         # our vLLM server from s09_serve.py
+base_url = "https://kevalshah90--kernelbook-vllm-serve.modal.run/v1"
+api_key_var = "VLLM_API_KEY"     # name of the env var holding the key (loaded from .env)
+
+[sampling]
+temperature = 1.0                # same temperature RL will sample at, so pass rates carry over
+max_tokens = 8192                # per model turn (thinking + reply); the episode is capped by
+                                 # the server's 32K context and max_turns below
+
+[select]
+shuffle = true                   # random sample: the first tasks in id order may not be typical
+seed = 0                         # fixed seed -> the same 60 tasks on every run
+limit = 60                       # sample size. Next batch without overlap: skip = 60, no limit
+
+[env.taskset]
+id = "kernelbook_taskset"        # our loader (kernelbook_taskset.py): reads local task folders;
+                                 # its env (HarborEnv) grades in a separate box
+registry_path = "work.nosync/tasks/registry-train.json"   # written by s08_split.py
+dataset = "kernelbook-train"
+ignore_timeouts = false          # default true would ignore task.toml's 900 s agent timeout
+
+[env.agent]
+max_turns = 30                   # model replies per episode (~1 tool call each). 20 ran out every
+                                 # time (4B pilot); at 50, failing attempts took 8-11 min each; every
+                                 # 9B pass so far came within 17 turns
+
+[env.agent.harness]
+id = "bash"                      # gives the model a shell tool, plus task.toml's MCP servers
+
+[env.agent.runtime]
+type = "modal"                   # GPU, image and network come from each task's task.toml
