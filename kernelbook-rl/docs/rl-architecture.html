@@ -1,0 +1,629 @@
+<title>KernelBook RL Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;1,400&display=swap">
+<style>
+/* Layout: one wide blueprint diagram (Mac | tunnel | Modal) driven by a phase stepper, then the async timeline, then the RL glossary. */
+:root {
+  --bg: #f3f5f2;          /* drafting paper, faint green */
+  --panel: #ffffff;
+  --ink: #17242c;
+  --muted: #56666f;
+  --line: #a9b6bb;
+  --faint: #dde3e1;
+  --mac-tint: #e6edf6;    /* Mac zone */
+  --modal-tint: #e5f0ea;  /* Modal zone */
+  --tunnel: #efe2c8;      /* tunnel band */
+  --accent: #b5600f;      /* active outline */
+  --c-req: #2a63b0;       /* model request */
+  --c-tok: #0f8a6d;       /* sampled tokens + logprobs */
+  --c-file: #b7791f;      /* files / artifacts */
+  --c-rew: #b0306c;       /* reward */
+  --c-w: #6b46c8;         /* weights */
+  --pass: #1f8a4c;
+  --font-display: "IBM Plex Serif", Georgia, serif;
+  --font-body: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121a1f; --panel: #1a252c; --ink: #e4ecef; --muted: #9aabb3; --line: #4c5f69; --faint: #26343c;
+  --mac-tint: #182636; --modal-tint: #172b23; --tunnel: #33291a; --accent: #f0a04b;
+  --c-req: #6ea6ff; --c-tok: #3fd1a8; --c-file: #e8b45c; --c-rew: #f06aa8; --c-w: #a98bff; --pass: #4cc47e;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121a1f; --panel: #1a252c; --ink: #e4ecef; --muted: #9aabb3; --line: #4c5f69; --faint: #26343c;
+  --mac-tint: #182636; --modal-tint: #172b23; --tunnel: #33291a; --accent: #f0a04b;
+  --c-req: #6ea6ff; --c-tok: #3fd1a8; --c-file: #e8b45c; --c-rew: #f06aa8; --c-w: #a98bff; --pass: #4cc47e;
+  color-scheme: dark }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1320px; margin: 0 auto; padding-block: 28px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+header { display: grid; gap: 6px; max-width: 78ch; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 500; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 500; font-size: 24px; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.sw-line { width: 26px; height: 0; border-top: 2px solid var(--line); display: inline-block; }
+.sw-dash { width: 26px; height: 0; border-top: 2px dashed var(--line); display: inline-block; }
+
+/* stage */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.diagram-scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--faint); border-radius: 10px; }
+.diagram-scroll svg { display: block; width: 100%; min-width: 980px; height: auto; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.controls button, .controls select { font-family: var(--font-body); font-size: 14px; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+.controls button:focus-visible, .controls select:focus-visible, .phase-list button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls .primary { background: var(--ink); color: var(--bg); border-color: var(--ink); min-width: 92px; }
+.progress { font-family: var(--font-mono); font-size: 13px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.caption { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 20px; background: var(--panel);
+  border: 1px solid var(--faint); border-radius: 10px; padding: 18px 20px; }
+.caption h3 { margin: 0 0 6px; font-family: var(--font-display); font-weight: 500; font-size: 21px; }
+.caption p { margin: 0; max-width: 72ch; }
+.caption .where { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.terms { display: flex; flex-wrap: wrap; gap: 6px; align-content: start; }
+.terms .chip { font-family: var(--font-mono); font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); }
+.terms .label { width: 100%; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.phase-list { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.phase-list button { font-family: var(--font-body); font-size: 13px; border: 1px solid var(--faint); background: transparent; color: var(--muted);
+  border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+.phase-list button[aria-current="step"] { border-color: var(--accent); color: var(--ink); background: var(--panel); }
+@media (max-width: 760px) { .caption { grid-template-columns: minmax(0, 1fr); } }
+
+/* svg styling */
+svg text { fill: var(--ink); font-family: var(--font-body); }
+.zone-mac { fill: var(--mac-tint); }
+.zone-modal { fill: var(--modal-tint); }
+.zone-tunnel { fill: var(--tunnel); }
+.zone-label { font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.zone-sub { font-size: 12px; fill: var(--muted); }
+.box > rect.frame { fill: var(--panel); stroke: var(--line); stroke-width: 1.25; transition: stroke .25s, stroke-width .25s; }
+.box.planned > rect.frame { stroke-dasharray: 7 5; }
+.box.active > rect.frame { stroke: var(--accent); stroke-width: 2.6; }
+.ghost { fill: var(--panel); stroke: var(--line); stroke-dasharray: 4 4; opacity: .8; }
+.t-name { font-size: 15px; font-weight: 700; }
+.t-line { font-size: 12.5px; fill: var(--muted); }
+.t-mono { font-family: var(--font-mono); font-size: 12px; }
+.t-mono-dim { font-family: var(--font-mono); font-size: 11.5px; fill: var(--muted); }
+.t-tag { font-family: var(--font-mono); font-size: 11px; fill: var(--accent); }
+.t-term { font-family: var(--font-mono); font-size: 11px; font-weight: 600; fill: var(--accent); letter-spacing: .04em; }
+.t-big { font-family: var(--font-mono); font-size: 22px; font-weight: 600; }
+.conn { fill: none; stroke: var(--line); stroke-width: 1.5; transition: stroke .25s; }
+.conn.active { stroke: var(--accent); stroke-width: 2.2; }
+.arrowhead { fill: var(--line); }
+.file-row { transition: opacity .35s; }
+.file-row.hidden { opacity: .18; }
+.file-row.flash text { fill: var(--accent); }
+.gate circle { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; transition: fill .2s, stroke .2s; }
+.gate.pass circle { fill: var(--pass); stroke: var(--pass); }
+.gate.pass text.mark { fill: #fff; }
+.gate text.mark { font-size: 10px; font-weight: 700; fill: transparent; }
+.dot { filter: drop-shadow(0 0 4px currentColor); }
+.note-fo div { font-family: var(--font-body); font-size: 12.5px; line-height: 1.45; color: var(--ink); }
+.note-fo b { font-weight: 700; }
+.note-fo .k { color: var(--accent); font-family: var(--font-mono); font-size: 11.5px; }
+
+/* async timeline */
+.panel { background: var(--panel); border: 1px solid var(--faint); border-radius: 10px; padding: 18px 20px; display: grid; gap: 12px; }
+.panel p { margin: 0; max-width: 80ch; }
+.timeline-scroll { overflow-x: auto; }
+.timeline-scroll svg { display: block; width: 100%; min-width: 760px; height: auto; }
+.tl-lane { font-size: 13px; font-weight: 600; }
+.tl-bar text { font-family: var(--font-mono); font-size: 11.5px; fill: #fff; }
+.playhead { stroke: var(--accent); stroke-width: 2; }
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.two-col div { min-width: 0; }
+.two-col h4 { margin: 0 0 4px; font-size: 15px; }
+
+/* glossary */
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--faint); vertical-align: top; }
+th { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+td.term { font-family: var(--font-mono); font-weight: 600; color: var(--accent); white-space: nowrap; }
+td.where { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
+.status { font-family: var(--font-mono); font-size: 11.5px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); white-space: nowrap; }
+.status.built { border-color: var(--pass); color: var(--pass); }
+footer { font-size: 13px; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) { .playhead-anim { animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">kernelbook-rl · agentic RL on Triton kernel tasks</div>
+    <h1>One RL step, from rollout to weight update</h1>
+    <p class="lede">Qwen3.5-9B (the <b>policy</b>) tries to rewrite a PyTorch module as a Triton kernel inside a Modal sandbox. A fresh grader scores it, the scores of a group of attempts become <b>GRPO advantages</b>, and the <b>trainer</b> turns them into a <b>weight update</b>. Press play, or step through the phases.</p>
+    <div class="legend" aria-label="Legend">
+      <span><i class="sw" style="background:var(--c-req)"></i>model request</span>
+      <span><i class="sw" style="background:var(--c-tok)"></i>sampled tokens + logprobs</span>
+      <span><i class="sw" style="background:var(--c-file)"></i>files</span>
+      <span><i class="sw" style="background:var(--c-rew)"></i>reward</span>
+      <span><i class="sw" style="background:var(--c-w)"></i>weights</span>
+      <span><i class="sw-line"></i>built (steps 0–10)</span>
+      <span><i class="sw-dash"></i>planned (steps 11–13)</span>
+    </div>
+  </header>
+
+  <section class="stage" aria-label="Animated architecture">
+    <div class="controls">
+      <button id="btn-play" class="primary" type="button">Play</button>
+      <button id="btn-prev" type="button">Previous</button>
+      <button id="btn-next" type="button">Next</button>
+      <button id="btn-reset" type="button">Restart</button>
+      <label for="speed" class="eyebrow" style="margin-left:6px">Speed</label>
+      <select id="speed"><option value="0.6">Slow</option><option value="1" selected>Normal</option><option value="1.8">Fast</option></select>
+      <span class="progress" id="progress">Phase 1 of 11</span>
+    </div>
+
+    <div class="diagram-scroll">
+<svg id="arch" viewBox="0 0 1280 840" role="img" aria-label="Architecture: Mac orchestrator and interception server, Prime tunnel, Modal policy server, agent and grader sandboxes, GRPO learner and trainer">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+
+  <!-- zones -->
+  <rect class="zone-mac" x="16" y="16" width="318" height="808" rx="12"/>
+  <text class="zone-label" x="32" y="42">Your Mac</text>
+  <text class="zone-sub" x="32" y="60">orchestrates every run today (step 9)</text>
+
+  <rect class="zone-tunnel" x="340" y="16" width="84" height="808" rx="12"/>
+  <text class="zone-label" x="382" y="42" text-anchor="middle">Prime</text>
+  <text class="zone-label" x="382" y="58" text-anchor="middle">tunnel</text>
+  <text class="t-mono-dim" x="382" y="76" text-anchor="middle">HTTPS</text>
+
+  <rect class="zone-modal" x="430" y="16" width="836" height="808" rx="12"/>
+  <text class="zone-label" x="446" y="42">Modal · cloud GPUs</text>
+  <text class="zone-sub" x="446" y="60">account limit 10 GPUs → 4 rollouts at once</text>
+
+  <!-- connectors (also the animation paths) -->
+  <path id="p-req"  class="conn" d="M450 382 H320" marker-end="url(#ah)"/>
+  <path id="p-fwd"  class="conn" d="M320 300 H395 V172 H450" marker-end="url(#ah)"/>
+  <path id="p-art"  class="conn" d="M840 430 H880" marker-end="url(#ah)"/>
+  <path id="p-rew"  class="conn" d="M1060 560 V585 H410 V470 H320" marker-end="url(#ah)"/>
+  <path id="p-trc"  class="conn" d="M320 540 H380 V715 H450" marker-end="url(#ah)"/>
+  <path id="p-grad" class="conn" d="M1228 715 H1256 V172 H1240" marker-end="url(#ah)"/>
+  <path id="p-sync" class="conn" d="M900 172 H760" marker-end="url(#ah)"/>
+  <path id="p-tool" class="conn" d="M741 386 V403" marker-end="url(#ah)"/>
+  <path id="p-obs"  class="conn" d="M760 403 V386" marker-end="url(#ah)"/>
+  <path id="p-write" class="conn" d="M655 440 H644" marker-end="url(#ah)"/>
+
+  <text class="t-mono-dim" x="372" y="374" text-anchor="middle">model call</text>
+  <text class="t-mono-dim" x="372" y="398" text-anchor="middle">↔ reply</text>
+  <text class="t-mono-dim" x="415" y="164" text-anchor="end">HTTPS</text>
+  <text class="t-mono-dim" x="735" y="579" text-anchor="middle">reward.json back to the orchestrator</text>
+  <text class="t-mono-dim" x="830" y="164" text-anchor="middle">weight sync</text>
+
+  <!-- Mac: orchestrator -->
+  <g id="orch" class="box">
+    <rect class="frame" x="30" y="80" width="290" height="160" rx="8"/>
+    <text class="t-term" x="44" y="100">ORCHESTRATOR</text>
+    <text class="t-name" x="44" y="120">vf-eval today · prime-rl later</text>
+    <text class="t-line" x="44" y="142">samples tasks from registry-train.json</text>
+    <text class="t-line" x="44" y="160">each task → a GROUP of G = 4 rollouts</text>
+    <text class="t-line" x="44" y="178">≤ 4 rollouts in flight (max_concurrent)</text>
+    <text class="t-mono" x="44" y="204">policy version <tspan id="pv-orch">v7</tspan></text>
+    <text class="t-mono-dim" x="44" y="224">async: use rollouts ≤ 4 versions old</text>
+  </g>
+
+  <!-- Mac: interception -->
+  <g id="intercept" class="box">
+    <rect class="frame" x="30" y="262" width="290" height="140" rx="8"/>
+    <text class="t-term" x="44" y="282">INTERCEPTION SERVER</text>
+    <text class="t-name" x="44" y="302">127.0.0.1 on the Mac</text>
+    <text class="t-line" x="44" y="324">every model call passes through here</text>
+    <text class="t-line" x="44" y="342">records token ids + logprobs (TITO)</text>
+    <text class="t-line" x="44" y="360">forwards the call to the policy server</text>
+    <text class="t-mono-dim" x="44" y="386">one server, 32 rollouts per tunnel</text>
+  </g>
+
+  <!-- Mac: traces -->
+  <g id="traces" class="box">
+    <rect class="frame" x="30" y="424" width="290" height="146" rx="8"/>
+    <text class="t-term" x="44" y="444">TRAJECTORIES</text>
+    <text class="t-name" x="44" y="464">traces.jsonl</text>
+    <text class="t-line" x="44" y="486">messages · token_ids · mask</text>
+    <text class="t-line" x="44" y="504">logprobs · reward · 7 gate metrics</text>
+    <text class="t-line" x="44" y="522">one line per rollout</text>
+    <text class="t-mono" x="44" y="552">rollouts recorded: <tspan id="ep-count">0</tspan></text>
+  </g>
+
+  <!-- Mac: why the tunnel -->
+  <foreignObject class="note-fo" x="30" y="592" width="290" height="222">
+    <div xmlns="http://www.w3.org/1999/xhtml">
+      <b>Why a tunnel?</b> The agent sandbox has its internet off except for one allowed domain. The interception server runs on the Mac at 127.0.0.1, which no cloud machine can reach. The Prime tunnel gives it a public HTTPS address, and verifiers allowlists exactly that domain. Because every model call passes through it, the trace holds the exact tokens and logprobs the policy sampled, which is what the trainer needs. <span class="k">Needs PRIME_API_KEY.</span>
+    </div>
+  </foreignObject>
+
+  <!-- Modal: policy server -->
+  <g id="vllm" class="box">
+    <rect class="frame" x="450" y="80" width="310" height="160" rx="8"/>
+    <text class="t-term" x="464" y="100">POLICY π_θ · INFERENCE</text>
+    <text class="t-name" x="464" y="120">vLLM server · 1× H100</text>
+    <text class="t-line" x="464" y="142">Qwen3.5-9B, temperature 1.0</text>
+    <text class="t-line" x="464" y="160">samples actions: thinking + tool call</text>
+    <text class="t-line" x="464" y="178">returns token ids + logprobs</text>
+    <text class="t-mono" x="464" y="204">weights <tspan id="pv-vllm">θ_v7</tspan></text>
+    <text class="t-mono-dim" x="464" y="224">scales to zero after 10 idle min</text>
+  </g>
+
+  <!-- Modal: trainer -->
+  <g id="trainer" class="box planned">
+    <rect class="frame" x="900" y="80" width="340" height="160" rx="8"/>
+    <text class="t-term" x="914" y="100">TRAINER · LEARNER</text>
+    <text class="t-name" x="914" y="120">PyTorch, own H100 in prime-rl</text>
+    <text class="t-line" x="914" y="142">recomputes logprobs under current θ</text>
+    <text class="t-line" x="914" y="160">clipped GRPO loss → backward → optimizer</text>
+    <text class="t-line" x="914" y="178">C1: shares one H100, vLLM sleeps</text>
+    <text class="t-mono" x="914" y="204">step <tspan id="tr-step">7</tspan> · produces <tspan id="tr-next">θ_v8</tspan></text>
+    <text class="t-tag" x="914" y="224">planned · steps 11–13</text>
+  </g>
+
+  <!-- Modal: agent sandbox (with ghosts for parallel rollouts) -->
+  <rect class="ghost" x="466" y="296" width="390" height="280" rx="8"/>
+  <rect class="ghost" x="458" y="288" width="390" height="280" rx="8"/>
+  <g id="agent" class="box">
+    <rect class="frame" x="450" y="280" width="390" height="280" rx="8"/>
+    <text class="t-term" x="464" y="300">ENVIRONMENT · AGENT SANDBOX</text>
+    <text class="t-mono-dim" x="828" y="300" text-anchor="end">×4 in parallel</text>
+    <text class="t-name" x="464" y="320">Modal L4 · one per rollout</text>
+    <text class="t-mono-dim" x="828" y="320" text-anchor="end">image kernel-env-base</text>
+
+    <g id="files-agent">
+      <rect x="462" y="332" width="178" height="150" rx="6" fill="none" stroke="var(--faint)"/>
+      <text class="t-mono" x="472" y="352" font-weight="600">/workspace</text>
+      <g class="file-row" id="f-ref"><text class="t-mono" x="472" y="374">reference.py</text><text class="t-mono-dim" x="472" y="388">copy, untrusted</text></g>
+      <g class="file-row" id="f-sol"><text class="t-mono" x="472" y="410">solution.py</text><text class="t-mono-dim" x="472" y="424" id="sol-state">empty stub</text></g>
+      <g class="file-row" id="f-tools"><text class="t-mono" x="472" y="446">.kernel_tools/</text><text class="t-mono-dim" x="472" y="460">grade · guard · hook</text><text class="t-mono-dim" x="472" y="474">mcp_tools.py</text></g>
+    </g>
+
+    <g id="harness">
+      <rect x="655" y="332" width="173" height="54" rx="6" fill="none" stroke="var(--line)"/>
+      <text class="t-term" x="665" y="350">AGENT LOOP</text>
+      <text class="t-line" x="665" y="368">bash harness (verifiers)</text>
+    </g>
+    <g id="tools">
+      <rect x="655" y="403" width="173" height="79" rx="6" fill="none" stroke="var(--line)"/>
+      <text class="t-term" x="665" y="421">ACTIONS → OBSERVATIONS</text>
+      <text class="t-line" x="665" y="439">bash · edit</text>
+      <text class="t-line" x="665" y="456">kernel-tools_check (MCP)</text>
+      <text class="t-mono-dim" x="665" y="473" id="obs-text">runs grade() in place</text>
+    </g>
+
+    <text class="t-big" x="464" y="530">turn <tspan id="turn">0</tspan> / 30</text>
+    <text class="t-line" x="620" y="516">ends: model stops · 30 turns · 900 s</text>
+    <text class="t-line" x="620" y="534">network: tunnel domain only</text>
+    <text class="t-line" x="620" y="552">finalize copies solution.py out</text>
+  </g>
+
+  <!-- Modal: grader sandbox -->
+  <g id="grader" class="box">
+    <rect class="frame" x="880" y="280" width="360" height="280" rx="8"/>
+    <text class="t-term" x="894" y="300">REWARD · VERIFIER</text>
+    <text class="t-name" x="894" y="320">Grader sandbox · fresh L4</text>
+    <g class="file-row" id="g-tests">
+      <text class="t-mono" x="894" y="346" font-weight="600">/tests/</text>
+      <text class="t-mono-dim" x="950" y="346">staged only here</text>
+      <text class="t-mono" x="894" y="366">reference.py</text><text class="t-mono-dim" x="994" y="366">trusted</text>
+      <text class="t-mono" x="894" y="384">test.sh</text>
+      <text class="t-mono" x="894" y="402">kernel_env/</text><text class="t-mono-dim" x="980" y="402">grader</text>
+    </g>
+    <g class="file-row" id="g-sol">
+      <text class="t-mono" x="894" y="430" font-weight="600">/workspace/</text>
+      <text class="t-mono" x="894" y="448">solution.py</text>
+      <text class="t-mono-dim" x="894" y="464">the ONLY file copied in</text>
+    </g>
+    <g id="gates">
+      <g class="gate" id="gate1"><circle cx="1084" cy="342" r="7"/><text class="mark" x="1084" y="345.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="346">exists</text></g>
+      <g class="gate" id="gate2"><circle cx="1084" cy="364" r="7"/><text class="mark" x="1084" y="367.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="368">guard</text></g>
+      <g class="gate" id="gate3"><circle cx="1084" cy="386" r="7"/><text class="mark" x="1084" y="389.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="390">parse</text></g>
+      <g class="gate" id="gate4"><circle cx="1084" cy="408" r="7"/><text class="mark" x="1084" y="411.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="412">weights</text></g>
+      <g class="gate" id="gate5"><circle cx="1084" cy="430" r="7"/><text class="mark" x="1084" y="433.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="434">runs</text></g>
+      <g class="gate" id="gate6"><circle cx="1084" cy="452" r="7"/><text class="mark" x="1084" y="455.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="456">uses_triton</text></g>
+      <g class="gate" id="gate7"><circle cx="1084" cy="474" r="7"/><text class="mark" x="1084" y="477.5" text-anchor="middle">✓</text><text class="t-mono" x="1098" y="478">correct</text></g>
+    </g>
+    <rect x="892" y="496" width="336" height="52" rx="6" fill="none" stroke="var(--faint)"/>
+    <text class="t-mono" x="904" y="516">/logs/verifier/reward.json</text>
+    <text class="t-mono" x="904" y="536">reward = <tspan id="reward-val">?</tspan></text>
+    <text class="t-mono-dim" x="1012" y="536">1 only if all 7 gates pass</text>
+  </g>
+
+  <!-- Learner strip -->
+  <g id="learner" class="box planned">
+    <rect class="frame" x="450" y="600" width="790" height="210" rx="8"/>
+    <text class="t-term" x="464" y="620">LEARNER · ONE GRPO TRAINING STEP</text>
+    <text class="t-mono-dim" x="1228" y="620" text-anchor="end">math built in step 10 (grpo.py) · loop planned</text>
+  </g>
+  <g id="b-group" class="box">
+    <rect class="frame" x="462" y="636" width="178" height="160" rx="6"/>
+    <text class="t-term" x="474" y="656">1 · GROUP</text>
+    <text class="t-line" x="474" y="676">4 rollouts of one task</text>
+    <text class="t-line" x="474" y="694">rewards r =</text>
+    <text class="t-mono" x="474" y="716" id="grp-r">[1, 0, 0, 1]</text>
+    <text class="t-mono-dim" x="474" y="740">p = 0.5: trainable</text>
+    <text class="t-mono-dim" x="474" y="758">[0,0,0,0]: no signal</text>
+  </g>
+  <g id="b-adv" class="box">
+    <rect class="frame" x="652" y="636" width="186" height="160" rx="6"/>
+    <text class="t-term" x="664" y="656">2 · ADVANTAGES</text>
+    <text class="t-line" x="664" y="676">Dr. GRPO: no ÷ std</text>
+    <text class="t-mono" x="664" y="698">Â = r − mean(r)</text>
+    <text class="t-mono" x="664" y="720" id="adv-v">[+.5, −.5, −.5, +.5]</text>
+    <text class="t-mono-dim" x="664" y="744">all-equal groups dropped</text>
+    <text class="t-mono-dim" x="664" y="762">(they teach nothing)</text>
+  </g>
+  <g id="b-loss" class="box">
+    <rect class="frame" x="850" y="636" width="186" height="160" rx="6"/>
+    <text class="t-term" x="862" y="656">3 · POLICY LOSS</text>
+    <text class="t-mono" x="862" y="678">ratio = π_new / π_old</text>
+    <text class="t-mono" x="862" y="698">clip to [0.8, 1.28]</text>
+    <text class="t-line" x="862" y="720">pessimistic min · no critic</text>
+    <text class="t-line" x="862" y="738">agg = prompt: token-mean</text>
+    <text class="t-line" x="862" y="756">per task, then mean</text>
+  </g>
+  <g id="b-opt" class="box">
+    <rect class="frame" x="1048" y="636" width="180" height="160" rx="6"/>
+    <text class="t-term" x="1060" y="656">4 · WEIGHT UPDATE</text>
+    <text class="t-line" x="1060" y="676">loss.backward()</text>
+    <text class="t-line" x="1060" y="694">clip grad norm 1.0</text>
+    <text class="t-line" x="1060" y="712">optimizer.step()</text>
+    <text class="t-mono" x="1060" y="738" id="opt-v">θ_v7 → θ_v8</text>
+    <text class="t-mono-dim" x="1060" y="760">then sync to vLLM</text>
+  </g>
+  <path class="conn" d="M640 716 H652" marker-end="url(#ah)"/>
+  <path class="conn" d="M838 716 H850" marker-end="url(#ah)"/>
+  <path class="conn" d="M1036 716 H1048" marker-end="url(#ah)"/>
+
+  <g id="dots"></g>
+</svg>
+    </div>
+
+    <div class="caption" aria-live="polite">
+      <div>
+        <h3 id="cap-title">Sample a batch</h3>
+        <p id="cap-text"></p>
+        <div class="where" id="cap-where"></div>
+      </div>
+      <div class="terms"><span class="label">RL terms in this phase</span><span id="cap-terms" style="display:contents"></span></div>
+    </div>
+    <ol class="phase-list" id="phase-list"></ol>
+  </section>
+
+  <section class="panel" aria-labelledby="async-h">
+    <h2 id="async-h">Async training: rollouts and training overlap</h2>
+    <p>In synchronous training, rollouts stop while the trainer steps. In <b>async</b> training (prime-rl), the policy server keeps sampling rollouts with the weights it has while the trainer computes the next ones. A batch can therefore be a few versions behind the trainer: it is <b>off-policy</b>. prime-rl drops rollouts older than <code>max_off_policy_steps = 4</code>, and the importance ratio in the loss corrects for the gap that remains.</p>
+    <div class="timeline-scroll">
+<svg viewBox="0 0 1200 210" role="img" aria-label="Timeline: inference keeps producing rollout batches at policy versions v5 to v9 while the trainer produces v6 to v10; each trainer step consumes a batch made by an older version">
+  <text class="tl-lane" x="12" y="62">Inference</text>
+  <text class="t-mono-dim" x="12" y="80">vLLM · rollouts</text>
+  <text class="tl-lane" x="12" y="142">Trainer</text>
+  <text class="t-mono-dim" x="12" y="160">learner · steps</text>
+  <g class="tl-bar">
+    <rect x="140" y="42" width="196" height="40" rx="6" fill="var(--c-req)"/><text x="152" y="67">batch A · by θ_v5</text>
+    <rect x="344" y="42" width="196" height="40" rx="6" fill="var(--c-req)" opacity=".88"/><text x="356" y="67">batch B · by θ_v6</text>
+    <rect x="548" y="42" width="196" height="40" rx="6" fill="var(--c-req)" opacity=".8"/><text x="560" y="67">batch C · by θ_v6</text>
+    <rect x="752" y="42" width="196" height="40" rx="6" fill="var(--c-req)" opacity=".72"/><text x="764" y="67">batch D · by θ_v7</text>
+    <rect x="956" y="42" width="196" height="40" rx="6" fill="var(--c-req)" opacity=".64"/><text x="968" y="67">batch E · by θ_v8</text>
+    <rect x="344" y="122" width="196" height="40" rx="6" fill="var(--c-w)"/><text x="356" y="147">step 6: A → θ_v6</text>
+    <rect x="548" y="122" width="196" height="40" rx="6" fill="var(--c-w)" opacity=".88"/><text x="560" y="147">step 7: B → θ_v7</text>
+    <rect x="752" y="122" width="196" height="40" rx="6" fill="var(--c-w)" opacity=".8"/><text x="764" y="147">step 8: C → θ_v8</text>
+    <rect x="956" y="122" width="196" height="40" rx="6" fill="var(--c-w)" opacity=".72"/><text x="968" y="147">step 9: D → θ_v9</text>
+  </g>
+  <path class="conn" d="M336 84 L360 120" marker-end="url(#ah)"/>
+  <path class="conn" d="M540 84 L564 120" marker-end="url(#ah)"/>
+  <path class="conn" d="M744 84 L768 120" marker-end="url(#ah)"/>
+  <path class="conn" d="M948 84 L972 120" marker-end="url(#ah)"/>
+  <text class="t-mono-dim" x="760" y="192">step 8 trains on batch C, made by θ_v6 while the trainer was already at θ_v7: 1 step off-policy</text>
+  <line class="playhead" id="playhead" x1="140" y1="30" x2="140" y2="176"/>
+</svg>
+    </div>
+    <div class="two-col">
+      <div><h4>C1, our own loop (step 11)</h4><p>Synchronous, one H100: vLLM samples a batch, then sleeps and frees its memory, the trainer steps, the new weights are copied into vLLM, and it wakes. Every rollout is on-policy. Single-turn: one answer per task, no <code>check</code> tool.</p></div>
+      <div><h4>C2, prime-rl (steps 12–13)</h4><p>Async on two H100s, inference on one and the trainer on the other, with the orchestrator in the same Modal container. Multi-turn with the <code>check</code> tool, exactly the episode shown above. The interception server moves into Modal with the orchestrator; sandboxes still reach it through a tunnel.</p></div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="gloss-h">
+    <h2 id="gloss-h">RL terms, mapped to this project</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Term</th><th>In this project</th><th>Where it lives</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="term">policy π_θ</td><td>The model whose weights θ we train: Qwen3.5-9B. It maps the conversation so far to the next action.</td><td class="where">vLLM on a Modal H100</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">environment</td><td>One Harbor task in its sandbox: <code>reference.py</code>, the tools, and the rules in <code>task.toml</code>.</td><td class="where">agent sandbox, Modal L4</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">rollout / episode</td><td>One complete attempt at one task: up to 30 turns, ending with a graded <code>solution.py</code>.</td><td class="where">agent sandbox</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">turn</td><td>One model reply (thinking + a tool call) followed by the tool's result.</td><td class="where">bash harness</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">action / observation</td><td>Action: the tool call (<code>bash</code>, <code>edit</code>, <code>kernel-tools_check</code>). Observation: what the tool returned, e.g. <code>failed_gate: "runs"</code>.</td><td class="where">harness + MCP server</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">trajectory</td><td>The rollout as data: messages, token ids, a mask of which tokens the policy sampled, their logprobs, and the reward.</td><td class="where">traces.jsonl (Mac)</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">reward</td><td>1 if all 7 grader gates pass, else 0. Computed by code, no LLM judge.</td><td class="where">grader sandbox → reward.json</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">verifier</td><td>Harbor's name for the grader: <code>tests/test.sh</code> run in a fresh sandbox that only receives <code>solution.py</code>.</td><td class="where">grader sandbox, Modal L4</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">logprobs · TITO</td><td>Log-probability of each sampled token, recorded at sampling time with the exact token ids ("tokens in, tokens out"), so the trainer never re-tokenizes text.</td><td class="where">interception server</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">group · G</td><td>G = 4 rollouts of the same task. GRPO compares rollouts within a group instead of using a value model.</td><td class="where">orchestrator</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">pass rate · trainable</td><td>p = passes / attempts per task. Only 0 &lt; p &lt; 1 tasks give GRPO a signal (<code>splits/trainable.txt</code>).</td><td class="where">s09_baseline.py</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">advantage Â</td><td>Reward minus the group's mean reward (Dr. GRPO, no division by std): how much better this rollout did than its siblings.</td><td class="where">rl_scratch/grpo.py</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">GRPO</td><td>Group Relative Policy Optimization: PPO-style clipped updates with group-relative advantages and no critic.</td><td class="where">grpo.py + trainer</td><td><span class="status">math built</span></td></tr>
+          <tr><td class="term">importance ratio · clip</td><td>exp(new logprob − old logprob) per token, clipped to [0.8, 1.28] (DAPO's clip-higher), so one update can't move a token too far.</td><td class="where">policy_loss()</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">loss aggregation</td><td>How token losses are averaged: <code>token</code>, <code>sequence</code>, or <code>prompt</code> (token-mean per task, then mean over tasks; our choice).</td><td class="where">policy_loss()</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">trainer · learner</td><td>Recomputes logprobs under the current weights, computes the loss, runs backward and the optimizer.</td><td class="where">Modal H100</td><td><span class="status">planned</span></td></tr>
+          <tr><td class="term">weight update · sync</td><td>The optimizer step that turns θ_v into θ_v+1, then copying the new weights into vLLM so new rollouts use them.</td><td class="where">trainer → vLLM</td><td><span class="status">planned</span></td></tr>
+          <tr><td class="term">orchestrator</td><td>Schedules rollouts, collects trajectories, computes advantages and packs training batches.</td><td class="where">vf-eval on the Mac now; prime-rl later</td><td><span class="status">partly built</span></td></tr>
+          <tr><td class="term">async · off-policy</td><td>Rollouts keep being sampled with older weights while the trainer steps; rollouts more than 4 versions old are dropped.</td><td class="where">prime-rl</td><td><span class="status">planned</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Numbers come from the project's runs: 436 validated tasks (train 382 / dev 54); Qwen3.5-9B passed 3 of 8 attempts on 4 train tasks, with one task at p = 0.5. The rewards [1, 0, 0, 1] and versions v7 → v8 in the animation are illustrative.</footer>
+</div>
+
+<script>
+(function () {
+  const svg = document.getElementById('arch');
+  const dots = document.getElementById('dots');
+  const $ = id => document.getElementById(id);
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let speed = 1, runId = 0, playing = false, idx = 0, turn = 0, episodes = 0, version = 7;
+
+  const ACTIVE_IDS = ['orch','intercept','traces','vllm','trainer','agent','grader','learner','b-group','b-adv','b-loss','b-opt'];
+  const CONN_IDS = ['p-req','p-fwd','p-art','p-rew','p-trc','p-grad','p-sync','p-tool','p-obs','p-write'];
+  const colors = { req: 'var(--c-req)', tok: 'var(--c-tok)', file: 'var(--c-file)', rew: 'var(--c-rew)', w: 'var(--c-w)' };
+
+  const sleep = ms => new Promise(r => setTimeout(r, reduce ? 0 : ms / speed));
+  function guard(id) { if (id !== runId) throw new Error('cancelled'); }
+  function active(ids, conns) {
+    ACTIVE_IDS.forEach(i => $(i).classList.toggle('active', ids.includes(i)));
+    CONN_IDS.forEach(i => $(i).classList.toggle('active', (conns || []).includes(i)));
+  }
+  function dot(pathId, color, ms, reverse, id) {
+    const path = $(pathId), len = path.getTotalLength();
+    if (reduce) return Promise.resolve();
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('r', 6.5); c.setAttribute('class', 'dot'); c.style.fill = colors[color]; c.style.color = colors[color];
+    dots.appendChild(c);
+    const dur = ms / speed; const t0 = performance.now();
+    return new Promise((resolve, reject) => {
+      function frame(now) {
+        if (id !== runId) { c.remove(); return reject(new Error('cancelled')); }
+        let t = Math.min(1, (now - t0) / dur); const e = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        const p = path.getPointAtLength((reverse ? 1 - e : e) * len);
+        c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+        if (t < 1) requestAnimationFrame(frame); else { c.remove(); resolve(); }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+  function files(agentShown, graderShown) {
+    ['f-ref','f-sol','f-tools'].forEach(f => $(f).classList.toggle('hidden', !agentShown.includes(f)));
+    ['g-tests','g-sol'].forEach(f => $(f).classList.toggle('hidden', !graderShown.includes(f)));
+  }
+  function gates(n) { for (let i = 1; i <= 7; i++) $('gate' + i).classList.toggle('pass', i <= n); }
+  function flash(id, on) { $(id).classList.toggle('flash', on); }
+  function setVersion(v) { $('pv-orch').textContent = 'v' + v; $('pv-vllm').textContent = 'θ_v' + v; $('tr-step').textContent = v;
+    $('tr-next').textContent = 'θ_v' + (v + 1); $('opt-v').textContent = `θ_v${v} → θ_v${v + 1}`; }
+
+  const phases = [
+    { title: 'Sample a batch of tasks', where: 'Mac · orchestrator (vf-eval today, prime-rl orchestrator later)',
+      terms: ['orchestrator', 'group', 'G = 4', 'policy version'],
+      text: 'The orchestrator draws tasks from registry-train.json. Each task gets a group of G = 4 rollouts, because GRPO learns by comparing attempts at the same task. Up to 4 rollouts run at once, set by the Modal account limit of 10 GPUs.',
+      run: async id => { turn = 0; $('turn').textContent = 0; $('reward-val').textContent = '?'; $('sol-state').textContent = 'empty stub';
+        $('obs-text').textContent = 'runs grade() in place'; files([], []); gates(0); active(['orch']); await sleep(1800); guard(id); } },
+    { title: 'Boot the agent sandbox and copy files in', where: 'Modal · agent sandbox, L4 GPU, image kernel-env-base:torch2.5.1-r2',
+      terms: ['environment', 'rollout', 'sandbox'],
+      text: 'Modal starts one L4 sandbox per rollout. The task\'s environment/ folder is uploaded into /workspace: an untrusted copy of reference.py, an empty solution.py, and .kernel_tools/ with the grader code behind the check tool. The MCP server starts, and the network is locked to the tunnel domain only.',
+      run: async id => { active(['orch', 'agent']); files([], []);
+        for (const f of ['f-ref', 'f-sol', 'f-tools']) { await sleep(650); guard(id); files(['f-ref','f-sol','f-tools'].slice(0, ['f-ref','f-sol','f-tools'].indexOf(f) + 1), []); flash(f, true); await sleep(350); flash(f, false); }
+        await sleep(700); guard(id); } },
+    { title: 'Turn: the harness calls the policy', where: 'sandbox → Prime tunnel → interception server (Mac) → vLLM (Modal H100)',
+      terms: ['turn', 'policy π_θ', 'state'],
+      text: 'The harness sends the conversation so far (the state) to the model. Its only route out of the locked sandbox is the Prime tunnel, which leads to the interception server on the Mac. The server records the request, then forwards it to the vLLM policy server over HTTPS with the API key.',
+      run: async id => { turn++; $('turn').textContent = turn; active(['agent', 'intercept', 'vllm'], ['p-req', 'p-fwd']);
+        await dot('p-req', 'req', 1300, false, id); guard(id); await dot('p-fwd', 'req', 1100, false, id); guard(id); await sleep(300); guard(id); } },
+    { title: 'The policy samples an action', where: 'vLLM → interception server → tunnel → sandbox',
+      terms: ['action', 'logprobs', 'TITO', 'sampling, T = 1.0'],
+      text: 'Qwen3.5-9B samples a reply at temperature 1.0: some thinking, then a tool call. vLLM returns the token ids and the logprob of every sampled token. The interception server stores them before passing the reply back, so the trainer later works on exactly the tokens the policy produced, never re-tokenized text.',
+      run: async id => { active(['vllm', 'intercept', 'agent'], ['p-fwd', 'p-req']);
+        await dot('p-fwd', 'tok', 1100, true, id); guard(id); await dot('p-req', 'tok', 1300, true, id); guard(id); await sleep(250); guard(id); } },
+    { title: 'Environment step: the tool runs', where: 'agent sandbox · harness + tools',
+      terms: ['observation', 'environment step', 'multi-turn'],
+      text: 'The harness runs the tool call. bash or edit writes solution.py; kernel-tools_check runs the real grader on it inside the sandbox and returns its verdict, for example failed_gate: "runs". That result is the observation, appended to the conversation for the next turn. The loop repeats until the episode ends.',
+      run: async id => { active(['agent'], ['p-tool', 'p-obs', 'p-write']);
+        await dot('p-tool', 'req', 450, false, id); guard(id); await dot('p-write', 'file', 400, false, id); guard(id);
+        files(['f-ref','f-sol','f-tools'], []); flash('f-sol', true);
+        $('sol-state').textContent = turn < 3 ? `written, turn ${turn}` : 'final version';
+        $('obs-text').textContent = turn < 2 ? 'check → failed_gate "runs"' : turn < 3 ? 'check → failed_gate "correct"' : 'check → reward 1.0';
+        await dot('p-obs', 'tok', 450, false, id); guard(id); flash('f-sol', false); await sleep(500); guard(id);
+        if (playing && turn < 3) return 2; } },
+    { title: 'The episode ends; only solution.py leaves', where: 'agent sandbox → grader sandbox',
+      terms: ['episode end', 'artifact'],
+      text: 'An episode ends when the model stops calling tools (agent_completed), after 30 turns, or after 900 seconds. Finalize copies exactly one file out: /workspace/solution.py, the artifact declared in task.toml. Nothing else from the agent sandbox, including its edited reference.py, reaches the grader.',
+      run: async id => { active(['agent', 'grader'], ['p-art']); files(['f-ref','f-sol','f-tools'], []);
+        await dot('p-art', 'file', 900, false, id); guard(id); files(['f-ref','f-sol','f-tools'], ['g-sol']); await sleep(600); guard(id); } },
+    { title: 'Grade in a fresh sandbox', where: 'Modal · grader sandbox, a fresh L4 the agent never touched',
+      terms: ['reward', 'verifier', 'reward hacking guard'],
+      text: 'A new sandbox starts from the same image. tests/ is staged only here: a trusted reference.py, test.sh and the grader code. test.sh runs the 7 gates in order and stops at the first failure. reward.json gets reward 1 only if all 7 pass, plus each gate as a metric.',
+      run: async id => { active(['grader']); files(['f-ref','f-sol','f-tools'], ['g-sol']); gates(0);
+        await sleep(500); guard(id); files(['f-ref','f-sol','f-tools'], ['g-sol', 'g-tests']); flash('g-tests', true); await sleep(500); flash('g-tests', false);
+        for (let i = 1; i <= 7; i++) { await sleep(330); guard(id); gates(i); }
+        await sleep(300); guard(id); $('reward-val').textContent = '1.0'; await sleep(700); guard(id); } },
+    { title: 'The reward joins the trajectory', where: 'grader → orchestrator → traces.jsonl (Mac)',
+      terms: ['reward', 'trajectory', 'mask'],
+      text: 'The reward travels back to the orchestrator and lands on the rollout\'s trace: messages, token ids, a mask marking which tokens the policy sampled (only those are trained on), their logprobs, the reward and the gate metrics. One line in traces.jsonl per rollout. Everything up to here runs today (step 9).',
+      run: async id => { active(['grader', 'traces', 'orch'], ['p-rew']); await dot('p-rew', 'rew', 1500, false, id); guard(id);
+        episodes += 4; $('ep-count').textContent = episodes; await sleep(700); guard(id); } },
+    { title: 'GRPO: advantages within the group', where: 'learner · rl_scratch/grpo.py (step 10)',
+      terms: ['GRPO', 'advantage Â', 'Dr. GRPO', 'zero-variance filter'],
+      text: 'Once all 4 rollouts of the task are scored, their rewards form a group, say [1, 0, 0, 1]. Each advantage is the reward minus the group mean: [+0.5, −0.5, −0.5, +0.5]. Dr. GRPO does not divide by the group\'s std, which would inflate near-unanimous groups. A group where every reward is equal has all advantages 0, so it is dropped.',
+      run: async id => { active(['traces', 'learner', 'b-group', 'b-adv'], ['p-trc']); await dot('p-trc', 'rew', 1200, false, id); guard(id); await sleep(1400); guard(id); } },
+    { title: 'Policy loss and weight update', where: 'trainer · Modal H100 (planned: step 11 for C1, steps 12–13 for prime-rl)',
+      terms: ['trainer', 'importance ratio', 'clipping', 'loss aggregation', 'weight update'],
+      text: 'The trainer recomputes each sampled token\'s logprob under the current weights. The ratio π_new / π_old shows how far the policy moved since sampling; it is clipped to [0.8, 1.28] and the pessimistic min keeps one step from moving a token too far. Losses are averaged per task (agg = prompt), then backward and an optimizer step turn θ_v into θ_v+1.',
+      run: async id => { active(['learner', 'b-loss', 'b-opt', 'trainer'], ['p-grad']); await sleep(900); guard(id);
+        await dot('p-grad', 'w', 1500, false, id); guard(id); await sleep(500); guard(id); } },
+    { title: 'Weight sync, and the loop continues', where: 'trainer → vLLM policy server',
+      terms: ['weight sync', 'on-policy / off-policy', 'async'],
+      text: 'The new weights are copied into vLLM, so later rollouts sample from the updated policy. In C1 this is synchronous: vLLM sleeps during the trainer step, then wakes with the new weights. In prime-rl it is async: rollouts keep running on the older weights while the trainer works, and any rollout more than 4 versions old is dropped.',
+      run: async id => { active(['trainer', 'vllm', 'orch'], ['p-sync']); await dot('p-sync', 'w', 1100, false, id); guard(id);
+        version++; setVersion(version); await sleep(1800); guard(id); } },
+  ];
+
+  const list = $('phase-list');
+  phases.forEach((p, i) => { const li = document.createElement('li'); const b = document.createElement('button'); b.type = 'button';
+    b.textContent = (i + 1) + '. ' + p.title.split(':')[0].split(',')[0]; b.addEventListener('click', () => go(i, false)); li.appendChild(b); list.appendChild(li); });
+
+  function caption(i) {
+    const p = phases[i]; $('cap-title').textContent = p.title; $('cap-text').textContent = p.text; $('cap-where').textContent = 'Runs on: ' + p.where;
+    const t = $('cap-terms'); t.innerHTML = ''; p.terms.forEach(x => { const s = document.createElement('span'); s.className = 'chip'; s.textContent = x; t.appendChild(s); });
+    $('progress').textContent = `Phase ${i + 1} of ${phases.length}` + (turn ? ` · turn ${turn}` : '');
+    list.querySelectorAll('button').forEach((b, j) => { if (j === i) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); });
+  }
+
+  function prepare(i) {
+    // put the diagram into the state it would have when phase i starts
+    if (i <= 1) turn = 0;
+    if (i === 2 && turn >= 3) turn = 0;          // stepping back into the loop starts a fresh episode
+    if (i >= 5 && turn < 3) turn = 3;
+    if (i === 3 || i === 4) turn = Math.max(turn, 1);
+    $('turn').textContent = turn;
+    files(i >= 2 ? ['f-ref','f-sol','f-tools'] : [], i >= 6 ? ['g-sol'] : []);
+    gates(i >= 7 ? 7 : 0); $('reward-val').textContent = i >= 7 ? '1.0' : '?';
+    if (i < 2) $('sol-state').textContent = 'empty stub';
+  }
+
+  async function go(i, auto) {
+    const id = ++runId; dots.innerHTML = ''; idx = (i + phases.length) % phases.length;
+    if (!auto) prepare(idx);
+    caption(idx);
+    try {
+      const next = await phases[idx].run(id);
+      caption(idx);
+      if (playing && id === runId) { await sleep(500); guard(id); go(typeof next === 'number' ? next : idx + 1, true); }
+    } catch (e) { /* cancelled */ }
+  }
+
+  function setPlaying(on) { playing = on; $('btn-play').textContent = on ? 'Pause' : 'Play'; if (on) go(idx, true); else { runId++; dots.innerHTML = ''; } }
+  $('btn-play').addEventListener('click', () => setPlaying(!playing));
+  $('btn-next').addEventListener('click', () => { playing = false; $('btn-play').textContent = 'Play'; go(idx + 1, false); });
+  $('btn-prev').addEventListener('click', () => { playing = false; $('btn-play').textContent = 'Play'; go(idx - 1, false); });
+  $('btn-reset').addEventListener('click', () => { turn = 0; episodes = 0; version = 7; setVersion(7); $('ep-count').textContent = 0;
+    playing = false; $('btn-play').textContent = 'Play'; go(0, false); });
+  $('speed').addEventListener('change', e => { speed = parseFloat(e.target.value) || 1; });
+
+  // async timeline playhead
+  const ph = $('playhead');
+  if (!reduce) { let t0 = performance.now();
+    (function loop(now) { const x = 140 + (((now - t0) / 9000) % 1) * 1012; ph.setAttribute('x1', x); ph.setAttribute('x2', x); requestAnimationFrame(loop); })(t0); }
+
+  // resting state: everything visible, first phase described
+  files(['f-ref','f-sol','f-tools'], ['g-sol','g-tests']); gates(7); $('reward-val').textContent = '1.0'; active([]);
+  phases[0].run = phases[0].run; caption(0);
+  if (!reduce) setTimeout(() => { if (!playing) setPlaying(true); }, 900);
+})();
+</script>
