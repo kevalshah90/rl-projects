@@ -157,6 +157,42 @@ Three similar names:
 | **`verifiers-v1`** | the Modal app it puts all its sandboxes under, agents and graders (see `modal container list`) |
 | **Harbor "verifier"** | a task's grader (`tests/test.sh`), which verifiers runs during scoring |
 
+**The harness** is the agent program that drives an episode's turns. We use verifiers' built-in
+`bash` harness (`[env.agent.harness] id = "bash"`). verifiers bundles it as one small Python script
+(`CHAT_PROGRAM_SOURCE` in `verifiers/v1/harnesses/utils/launch.py`: openai, mcp, httpx), writes it
+into the agent sandbox and runs it there with `runtime.run_program`. It is not the model and not
+the orchestrator: the policy decides what to do, and the harness does it and feeds back the result.
+
+```
+agent sandbox (Modal L4)
+┌────────────────────────────────────────────────────────────────────────────┐
+│ harness = chat program (python, started by verifiers)                      │
+│                                                                            │
+│  messages = [system: "You are a coding agent…", user: instruction.md]      │
+│  loop (≤ max_turns = 30):                                                  │
+│    1. call the model    → OpenAI client, base_url = tunnel → interception  │──► Mac → vLLM
+│    2. reply has a tool call?                                               │
+│         bash  → runs the shell command right here in the sandbox           │
+│         edit  → string replace in a file (e.g. /workspace/solution.py)     │
+│         kernel-tools_check → MCP client → the task's stdio MCP server      │
+│    3. append the tool result (the observation) to messages                 │
+│    4. near the context limit → compact (summarize at 16K tokens left)      │
+│  stop: no tool call (agent_completed) │ 30 turns │ 900 s timeout           │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Part | Its relation to the harness |
+| --- | --- |
+| Policy (vLLM) | decides *what* to do; never touches the sandbox. The harness carries it out |
+| Orchestrator (`vf-eval`, Mac) | creates the sandbox, launches the harness, then collects `solution.py` for grading. A harness lives for one episode in one box |
+| Interception server | the harness's only route to the model. It gets the tunnel URL and a per-rollout token as program arguments (so the tools it runs don't inherit them); the vLLM key never enters the sandbox |
+| `check` tool | not part of the harness: it is the task's MCP server from `task.toml`. The harness connects as an MCP client, hence the name `<server>_<tool>` = `kernel-tools_check` |
+
+Harnesses are swappable: verifiers also ships `terminus_2`, `mini_swe_agent`, `claude_code`,
+`codex`, `openclaw` and others, each a different agent loop around the same policy, task and
+grader. For RL the harness is part of the environment the policy learns in, so keep it the same
+across the baseline, training and evaluation.
+
 ### 3. Startup (Mac, ~5 s)
 
 ```

@@ -134,6 +134,23 @@ td.where { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted)
 .status.built { border-color: var(--pass); color: var(--pass); }
 footer { font-size: 13px; color: var(--muted); }
 
+/* edit mode: text becomes editable; Save publishes a new version of this page */
+.edit-status { font-size: 13px; color: var(--muted); }
+body.editing [data-ed] { outline: 1px dashed var(--line); outline-offset: 2px; cursor: text; }
+body.editing [data-ed]:hover, body.editing [data-ed]:focus { outline-color: var(--accent); }
+body.editing text[data-ed]:hover { fill: var(--accent); }
+.svg-edit { position: fixed; z-index: 10; font: 13px var(--font-mono); padding: 3px 6px; border: 1.5px solid var(--accent);
+  border-radius: 4px; background: var(--panel); color: var(--ink); }
+
+/* the harness's messages list: assistant turns are sampled (trained), tool results are masked */
+.msg rect { fill: var(--panel); stroke: var(--line); stroke-width: 1; transition: stroke .2s; }
+.msg text { font-family: var(--font-mono); font-size: 9.5px; fill: var(--muted); }
+.msg.m-asst rect { fill: color-mix(in srgb, var(--c-tok) 18%, var(--panel)); stroke: var(--c-tok); }
+.msg.m-asst text { fill: var(--ink); }
+.msg.m-tool rect { stroke-dasharray: 2 2; }
+.msg.new rect { stroke: var(--accent); stroke-width: 2; }
+#msgs.sending .msg rect { stroke: var(--c-req); stroke-width: 1.6; }
+
 @media (prefers-reduced-motion: reduce) { .playhead-anim { animation: none !important; } }
 </style>
 
@@ -162,7 +179,11 @@ footer { font-size: 13px; color: var(--muted); }
       <label for="speed" class="eyebrow" style="margin-left:6px">Speed</label>
       <select id="speed"><option value="0.6">Slow</option><option value="1" selected>Normal</option><option value="1.8">Fast</option></select>
       <span class="progress" id="progress">Phase 1 of 11</span>
+      <button id="btn-edit" type="button" hidden>Edit text</button>
+      <button id="btn-save" class="primary" type="button" hidden disabled>Save</button>
+      <button id="btn-discard" type="button" hidden>Done</button>
     </div>
+    <div class="edit-status" id="edit-status" hidden></div>
 
     <div class="diagram-scroll">
 <svg id="arch" viewBox="0 0 1280 840" role="img" aria-label="Architecture: Mac orchestrator and interception server, Prime tunnel, Modal policy server, agent and grader sandboxes, GRPO learner and trainer">
@@ -192,9 +213,9 @@ footer { font-size: 13px; color: var(--muted); }
   <path id="p-trc"  class="conn" d="M320 540 H380 V715 H450" marker-end="url(#ah)"/>
   <path id="p-grad" class="conn" d="M1228 715 H1256 V172 H1240" marker-end="url(#ah)"/>
   <path id="p-sync" class="conn" d="M900 172 H760" marker-end="url(#ah)"/>
-  <path id="p-tool" class="conn" d="M741 386 V403" marker-end="url(#ah)"/>
-  <path id="p-obs"  class="conn" d="M760 403 V386" marker-end="url(#ah)"/>
-  <path id="p-write" class="conn" d="M655 440 H644" marker-end="url(#ah)"/>
+  <path id="p-tool" class="conn" d="M741 414 V426" marker-end="url(#ah)"/>
+  <path id="p-obs"  class="conn" d="M760 426 V414" marker-end="url(#ah)"/>
+  <path id="p-write" class="conn" d="M655 462 H644" marker-end="url(#ah)"/>
 
   <text class="t-mono-dim" x="372" y="374" text-anchor="middle">model call</text>
   <text class="t-mono-dim" x="372" y="398" text-anchor="middle">↔ reply</text>
@@ -286,16 +307,17 @@ footer { font-size: 13px; color: var(--muted); }
     </g>
 
     <g id="harness">
-      <rect x="655" y="332" width="173" height="54" rx="6" fill="none" stroke="var(--line)"/>
-      <text class="t-term" x="665" y="350">AGENT LOOP</text>
-      <text class="t-line" x="665" y="368">bash harness (verifiers)</text>
+      <rect x="655" y="332" width="173" height="82" rx="6" fill="none" stroke="var(--line)"/>
+      <text class="t-term" x="665" y="348">AGENT LOOP</text>
+      <text class="t-mono-dim" x="665" y="363">bash harness · messages</text>
+      <g id="msgs"></g>
     </g>
     <g id="tools">
-      <rect x="655" y="403" width="173" height="79" rx="6" fill="none" stroke="var(--line)"/>
-      <text class="t-term" x="665" y="421">ACTIONS → OBSERVATIONS</text>
-      <text class="t-line" x="665" y="439">bash · edit</text>
-      <text class="t-line" x="665" y="456">kernel-tools_check (MCP)</text>
-      <text class="t-mono-dim" x="665" y="473" id="obs-text">runs grade() in place</text>
+      <rect x="655" y="426" width="173" height="70" rx="6" fill="none" stroke="var(--line)"/>
+      <text class="t-term" x="665" y="442">ACTIONS → OBSERVATIONS</text>
+      <text class="t-line" x="665" y="458">bash · edit</text>
+      <text class="t-line" x="665" y="473">kernel-tools_check (MCP)</text>
+      <text class="t-mono-dim" x="665" y="489" id="obs-text">runs grade() in place</text>
     </g>
 
     <text class="t-big" x="464" y="530">turn <tspan id="turn">0</tspan> / 30</text>
@@ -442,7 +464,8 @@ footer { font-size: 13px; color: var(--muted); }
           <tr><td class="term">rollout / episode</td><td>One complete attempt at one task: up to 30 turns, ending with a graded <code>solution.py</code>.</td><td class="where">agent sandbox</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">turn</td><td>One model reply (thinking + a tool call) followed by the tool's result.</td><td class="where">bash harness</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">action / observation</td><td>Action: the tool call (<code>bash</code>, <code>edit</code>, <code>kernel-tools_check</code>). Observation: what the tool returned, e.g. <code>failed_gate: "runs"</code>.</td><td class="where">harness + MCP server</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">trajectory</td><td>The rollout as data: messages, token ids, a mask of which tokens the policy sampled, their logprobs, and the reward.</td><td class="where">traces.jsonl (Mac)</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">trajectory</td><td>The rollout as data: messages, token ids, a mask of which tokens the policy sampled, their logprobs, and the reward. The prompt and tool results are in it but masked, so the trainer learns only from the policy's own tokens.</td><td class="where">traces.jsonl (Mac)</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">messages · context</td><td>The conversation the harness keeps: system, user (the instruction), then an assistant reply and a tool result per turn. Sent whole on every turn; compacted into a summary when about 16K tokens of context are left.</td><td class="where">bash harness, agent sandbox</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">reward</td><td>1 if all 7 grader gates pass, else 0. Computed by code, no LLM judge.</td><td class="where">grader sandbox → reward.json</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">verifier</td><td>Harbor's name for the grader: <code>tests/test.sh</code> run in a fresh sandbox that only receives <code>solution.py</code>.</td><td class="where">grader sandbox, Modal L4</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">logprobs · TITO</td><td>Log-probability of each sampled token, recorded at sampling time with the exact token ids ("tokens in, tokens out"), so the trainer never re-tokenizes text.</td><td class="where">interception server</td><td><span class="status built">built</span></td></tr>
@@ -464,8 +487,19 @@ footer { font-size: 13px; color: var(--muted); }
   <footer>Numbers come from the project's runs: 436 validated tasks (train 382 / dev 54); Qwen3.5-9B passed 3 of 8 attempts on 4 train tasks, with one task at p = 0.5. The rewards [1, 0, 0, 1] and versions v7 → v8 in the animation are illustrative.</footer>
 </div>
 
-<script>
+<script type="application/json" id="phase-edits">{}</script>
+<script id="page-script">
 (function () {
+  // The page as served, captured before any script changes it. Save edits this copy, never the live DOM.
+  const ME = document.currentScript, KEEP = new Set(['TITLE', 'META', 'LINK', 'STYLE', 'DIV']);
+  const RESET = document.head.querySelector('style')?.textContent || '';
+  const tpl = document.createElement('div');
+  for (const n of document.body.childNodes)
+    if (n.nodeType === 3 || (n.nodeType === 1 && (KEEP.has(n.tagName) || n.id === 'phase-edits' || n === ME))) tpl.appendChild(n.cloneNode(true));
+  let phaseEdits = {};
+  try { phaseEdits = JSON.parse(document.getElementById('phase-edits').textContent) || {}; } catch (e) { /* keep defaults */ }
+  let editing = false;
+
   const svg = document.getElementById('arch');
   const dots = document.getElementById('dots');
   const $ = id => document.getElementById(id);
@@ -504,6 +538,18 @@ footer { font-size: 13px; color: var(--muted); }
     ['f-ref','f-sol','f-tools'].forEach(f => $(f).classList.toggle('hidden', !agentShown.includes(f)));
     ['g-tests','g-sol'].forEach(f => $(f).classList.toggle('hidden', !graderShown.includes(f)));
   }
+  // the conversation the harness keeps: sys, user, then assistant + tool per turn (at most 8 chips drawn)
+  function msgs(nAsst, nTool, flashLast) {
+    const g = $('msgs'), items = [['sys', ''], ['user', '']], sub = k => String(k).replace(/\d/g, d => '₀₁₂₃₄₅₆₇₈₉'[d]);
+    for (let k = 1; k <= Math.max(nAsst, nTool); k++) { if (k <= nAsst) items.push(['asst' + sub(k), 'm-asst']); if (k <= nTool) items.push(['tool' + sub(k), 'm-tool']); }
+    g.innerHTML = '';
+    items.slice(0, 8).forEach(([label, cls], j) => {
+      const x = 663 + (j % 4) * 39, y = 372 + Math.floor(j / 4) * 18;
+      const m = document.createElementNS('http://www.w3.org/2000/svg', 'g'); m.setAttribute('class', `msg ${cls}${flashLast && j === items.length - 1 ? ' new' : ''}`);
+      m.innerHTML = `<rect x="${x}" y="${y}" width="36" height="14" rx="3"/><text x="${x + 18}" y="${y + 10.5}" text-anchor="middle">${label}</text>`;
+      g.appendChild(m);
+    });
+  }
   function gates(n) { for (let i = 1; i <= 7; i++) $('gate' + i).classList.toggle('pass', i <= n); }
   function flash(id, on) { $(id).classList.toggle('flash', on); }
   function setVersion(v) { $('pv-orch').textContent = 'v' + v; $('pv-vllm').textContent = 'θ_v' + v; $('tr-step').textContent = v;
@@ -514,7 +560,7 @@ footer { font-size: 13px; color: var(--muted); }
       terms: ['orchestrator', 'group', 'G = 4', 'policy version'],
       text: 'The orchestrator draws tasks from registry-train.json. Each task gets a group of G = 4 rollouts, because GRPO learns by comparing attempts at the same task. Up to 4 rollouts run at once, set by the Modal account limit of 10 GPUs.',
       run: async id => { turn = 0; $('turn').textContent = 0; $('reward-val').textContent = '?'; $('sol-state').textContent = 'empty stub';
-        $('obs-text').textContent = 'runs grade() in place'; files([], []); gates(0); active(['orch']); await sleep(1800); guard(id); } },
+        $('obs-text').textContent = 'runs grade() in place'; files([], []); gates(0); msgs(0, 0); active(['orch']); await sleep(1800); guard(id); } },
     { title: 'Boot the agent sandbox and copy files in', where: 'Modal · agent sandbox, L4 GPU, image kernel-env-base:torch2.5.1-r2',
       terms: ['environment', 'rollout', 'sandbox'],
       text: 'Modal starts one L4 sandbox per rollout. The task\'s environment/ folder is uploaded into /workspace: an untrusted copy of reference.py, an empty solution.py, and .kernel_tools/ with the grader code behind the check tool. The MCP server starts, and the network is locked to the tunnel domain only.',
@@ -522,24 +568,25 @@ footer { font-size: 13px; color: var(--muted); }
         for (const f of ['f-ref', 'f-sol', 'f-tools']) { await sleep(650); guard(id); files(['f-ref','f-sol','f-tools'].slice(0, ['f-ref','f-sol','f-tools'].indexOf(f) + 1), []); flash(f, true); await sleep(350); flash(f, false); }
         await sleep(700); guard(id); } },
     { title: 'Turn: the harness calls the policy', where: 'sandbox → Prime tunnel → interception server (Mac) → vLLM (Modal H100)',
-      terms: ['turn', 'policy π_θ', 'state'],
-      text: 'The harness sends the conversation so far (the state) to the model. Its only route out of the locked sandbox is the Prime tunnel, which leads to the interception server on the Mac. The server records the request, then forwards it to the vLLM policy server over HTTPS with the API key.',
-      run: async id => { turn++; $('turn').textContent = turn; active(['agent', 'intercept', 'vllm'], ['p-req', 'p-fwd']);
-        await dot('p-req', 'req', 1300, false, id); guard(id); await dot('p-fwd', 'req', 1100, false, id); guard(id); await sleep(300); guard(id); } },
+      terms: ['turn', 'policy π_θ', 'state', 'context'],
+      text: 'The harness sends the conversation so far (the state) to the model: its whole messages list, the system prompt and instruction plus every earlier reply and tool result, so each turn\'s request is longer than the last. Its only route out of the locked sandbox is the Prime tunnel, which leads to the interception server on the Mac. The server records the request, then forwards it to the vLLM policy server over HTTPS with the API key.',
+      run: async id => { turn++; $('turn').textContent = turn; active(['agent', 'intercept', 'vllm'], ['p-req', 'p-fwd']); $('msgs').classList.add('sending');
+        try { await dot('p-req', 'req', 1300, false, id); guard(id); await dot('p-fwd', 'req', 1100, false, id); guard(id); await sleep(300); guard(id); }
+        finally { $('msgs').classList.remove('sending'); } } },
     { title: 'The policy samples an action', where: 'vLLM → interception server → tunnel → sandbox',
       terms: ['action', 'logprobs', 'TITO', 'sampling, T = 1.0'],
-      text: 'Qwen3.5-9B samples a reply at temperature 1.0: some thinking, then a tool call. vLLM returns the token ids and the logprob of every sampled token. The interception server stores them before passing the reply back, so the trainer later works on exactly the tokens the policy produced, never re-tokenized text.',
+      text: 'Qwen3.5-9B samples a reply at temperature 1.0: some thinking, then a tool call. vLLM returns the token ids and the logprob of every sampled token. The interception server stores them before passing the reply back, so the trainer later works on exactly the tokens the policy produced, never re-tokenized text. The harness appends the reply to its messages list as an assistant message (green: the tokens RL trains on).',
       run: async id => { active(['vllm', 'intercept', 'agent'], ['p-fwd', 'p-req']);
-        await dot('p-fwd', 'tok', 1100, true, id); guard(id); await dot('p-req', 'tok', 1300, true, id); guard(id); await sleep(250); guard(id); } },
+        await dot('p-fwd', 'tok', 1100, true, id); guard(id); await dot('p-req', 'tok', 1300, true, id); guard(id); msgs(turn, turn - 1, true); await sleep(250); guard(id); } },
     { title: 'Environment step: the tool runs', where: 'agent sandbox · harness + tools',
-      terms: ['observation', 'environment step', 'multi-turn'],
-      text: 'The harness runs the tool call. bash or edit writes solution.py; kernel-tools_check runs the real grader on it inside the sandbox and returns its verdict, for example failed_gate: "runs". That result is the observation, appended to the conversation for the next turn. The loop repeats until the episode ends.',
+      terms: ['observation', 'environment step', 'multi-turn', 'messages', 'compaction'],
+      text: 'The harness runs the tool call. bash or edit writes solution.py; kernel-tools_check runs the real grader on it inside the sandbox and returns its verdict, for example failed_gate: "runs". That result is the observation: the harness appends it to the messages list as a tool message tied to the call\'s id, and the next turn sends the whole list again. The list only grows, so when about 16K tokens of context are left the harness compacts it into a summary and carries on. The loop repeats until the episode ends.',
       run: async id => { active(['agent'], ['p-tool', 'p-obs', 'p-write']);
         await dot('p-tool', 'req', 450, false, id); guard(id); await dot('p-write', 'file', 400, false, id); guard(id);
         files(['f-ref','f-sol','f-tools'], []); flash('f-sol', true);
         $('sol-state').textContent = turn < 3 ? `written, turn ${turn}` : 'final version';
         $('obs-text').textContent = turn < 2 ? 'check → failed_gate "runs"' : turn < 3 ? 'check → failed_gate "correct"' : 'check → reward 1.0';
-        await dot('p-obs', 'tok', 450, false, id); guard(id); flash('f-sol', false); await sleep(500); guard(id);
+        await dot('p-obs', 'tok', 450, false, id); guard(id); msgs(turn, turn, true); flash('f-sol', false); await sleep(500); guard(id);
         if (playing && turn < 3) return 2; } },
     { title: 'The episode ends; only solution.py leaves', where: 'agent sandbox → grader sandbox',
       terms: ['episode end', 'artifact'],
@@ -555,7 +602,7 @@ footer { font-size: 13px; color: var(--muted); }
         await sleep(300); guard(id); $('reward-val').textContent = '1.0'; await sleep(700); guard(id); } },
     { title: 'The reward joins the trajectory', where: 'grader → orchestrator → traces.jsonl (Mac)',
       terms: ['reward', 'trajectory', 'mask'],
-      text: 'The reward travels back to the orchestrator and lands on the rollout\'s trace: messages, token ids, a mask marking which tokens the policy sampled (only those are trained on), their logprobs, the reward and the gate metrics. One line in traces.jsonl per rollout. Everything up to here runs today (step 9).',
+      text: 'The reward travels back to the orchestrator and lands on the rollout\'s trace: messages, token ids, a mask marking which tokens the policy sampled (only those are trained on; the prompt and every tool result are in the trace but masked out), their logprobs, the reward and the gate metrics. One line in traces.jsonl per rollout. Everything up to here runs today (step 9).',
       run: async id => { active(['grader', 'traces', 'orch'], ['p-rew']); await dot('p-rew', 'rew', 1500, false, id); guard(id);
         episodes += 4; $('ep-count').textContent = episodes; await sleep(700); guard(id); } },
     { title: 'GRPO: advantages within the group', where: 'learner · rl_scratch/grpo.py (step 10)',
@@ -573,6 +620,7 @@ footer { font-size: 13px; color: var(--muted); }
       run: async id => { active(['trainer', 'vllm', 'orch'], ['p-sync']); await dot('p-sync', 'w', 1100, false, id); guard(id);
         version++; setVersion(version); await sleep(1800); guard(id); } },
   ];
+  Object.entries(phaseEdits).forEach(([i, e]) => { if (phases[i]) for (const k of ['title', 'text', 'where']) if (typeof e[k] === 'string') phases[i][k] = e[k]; });
 
   const list = $('phase-list');
   phases.forEach((p, i) => { const li = document.createElement('li'); const b = document.createElement('button'); b.type = 'button';
@@ -595,6 +643,7 @@ footer { font-size: 13px; color: var(--muted); }
     files(i >= 2 ? ['f-ref','f-sol','f-tools'] : [], i >= 6 ? ['g-sol'] : []);
     gates(i >= 7 ? 7 : 0); $('reward-val').textContent = i >= 7 ? '1.0' : '?';
     if (i < 2) $('sol-state').textContent = 'empty stub';
+    if (i <= 2) msgs(turn, turn); else if (i <= 4) msgs(turn, turn - 1); else msgs(turn, turn);
   }
 
   async function go(i, auto) {
@@ -622,8 +671,94 @@ footer { font-size: 13px; color: var(--muted); }
     (function loop(now) { const x = 140 + (((now - t0) / 9000) % 1) * 1012; ph.setAttribute('x1', x); ph.setAttribute('x2', x); requestAnimationFrame(loop); })(t0); }
 
   // resting state: everything visible, first phase described
-  files(['f-ref','f-sol','f-tools'], ['g-sol','g-tests']); gates(7); $('reward-val').textContent = '1.0'; active([]);
+  files(['f-ref','f-sol','f-tools'], ['g-sol','g-tests']); gates(7); msgs(3, 3); $('reward-val').textContent = '1.0'; active([]);
   phases[0].run = phases[0].run; caption(0);
-  if (!reduce) setTimeout(() => { if (!playing) setPlaying(true); }, 900);
+  if (!reduce) setTimeout(() => { if (!playing && !editing) setPlaying(true); }, 900);
+
+  // ---- editing: text in the page and diagram, plus the phase captions ----
+  const SEL = 'header .eyebrow, h1, .lede, .panel h2, .panel > p, .two-col h4, .two-col p, th, td, footer, .note-fo div, #arch text, .timeline-scroll text';
+  const DYN = new Set(['sol-state', 'obs-text', 'opt-v']);   // the animation rewrites these
+  const editable = el => !el.matches('text.mark') && !el.closest('#msgs') && !(el.matches('text') && (DYN.has(el.id) || el.querySelector('tspan[id]')));
+  const liveEds = [...document.querySelectorAll(SEL)].filter(editable);
+  const tplEds = [...tpl.querySelectorAll(SEL)].filter(editable);
+  liveEds.forEach((el, k) => { el.dataset.ed = k; });
+  const capEls = { title: $('cap-title'), text: $('cap-text'), where: $('cap-where') };
+  const status = $('edit-status'), btnEdit = $('btn-edit'), btnSave = $('btn-save'), btnDone = $('btn-discard');
+  const dirtyHtml = new Set(); let dirty = false, art = null;
+
+  function say(msg) { status.textContent = msg; status.hidden = !msg; }
+  function markDirty() { dirty = true; btnSave.disabled = false; btnDone.textContent = 'Discard'; say('Unsaved changes.'); }
+  // copy only plain formatting from an edited element, so pasted markup can't carry scripts or styles
+  const ALLOWED = new Set(['B', 'STRONG', 'I', 'EM', 'CODE', 'SPAN', 'BR']);
+  function cleanInto(src, dst) {
+    for (const n of src.childNodes) {
+      if (n.nodeType === 3) dst.appendChild(document.createTextNode(n.data));
+      else if (n.nodeType === 1 && ALLOWED.has(n.tagName)) {
+        const e = document.createElement(n.tagName.toLowerCase());
+        if (typeof n.className === 'string' && n.className) e.className = n.className;
+        cleanInto(n, e); dst.appendChild(e);
+      } else if (n.nodeType === 1 && !['SCRIPT', 'STYLE', 'TEMPLATE'].includes(n.tagName)) cleanInto(n, dst);
+    }
+  }
+
+  function setEditing(on) {
+    editing = on; document.body.classList.toggle('editing', on);
+    liveEds.forEach(el => { if (!(el instanceof SVGElement)) on ? el.setAttribute('contenteditable', 'true') : el.removeAttribute('contenteditable'); });
+    Object.values(capEls).forEach(el => on ? el.setAttribute('contenteditable', 'true') : el.removeAttribute('contenteditable'));
+    btnEdit.hidden = on; btnSave.hidden = !on; btnDone.hidden = !on;
+    if (on) { setPlaying(false); say('Editing. Click any dashed text to change it; diagram labels open a small box (Enter to keep, Esc to cancel). Phase captions are editable too.'); }
+    else say('');
+  }
+
+  function editSvgText(el) {
+    const r = el.getBoundingClientRect(), k = +el.dataset.ed, inp = document.createElement('input');
+    inp.className = 'svg-edit'; inp.value = el.textContent;
+    Object.assign(inp.style, { left: Math.max(4, r.left - 6) + 'px', top: (r.top - 6) + 'px', width: Math.min(window.innerWidth - 12, Math.max(180, r.width + 48)) + 'px' });
+    document.body.appendChild(inp); inp.focus(); inp.select();
+    let done = false;
+    const finish = keep => { if (done) return; done = true;
+      if (keep && inp.value !== el.textContent) { el.textContent = inp.value; tplEds[k].textContent = inp.value; markDirty(); }
+      inp.remove(); };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); });
+    inp.addEventListener('blur', () => finish(true));
+  }
+
+  document.addEventListener('click', e => { if (!editing) return; const t = e.target.closest && e.target.closest('text[data-ed]'); if (t) editSvgText(t); });
+  document.addEventListener('input', e => {
+    if (!editing) return;
+    const el = e.target.closest && e.target.closest('[data-ed]');
+    if (el) { dirtyHtml.add(+el.dataset.ed); markDirty(); return; }
+    for (const [field, cap] of Object.entries(capEls)) if (cap.contains(e.target)) {
+      const v = field === 'where' ? cap.textContent.replace(/^Runs on:\s*/, '') : cap.textContent;
+      phases[idx][field] = v; phaseEdits[idx] = { title: phases[idx].title, text: phases[idx].text, where: phases[idx].where };
+      if (field === 'title') list.querySelectorAll('button')[idx].textContent = (idx + 1) + '. ' + v.split(':')[0].split(',')[0];
+      markDirty();
+    }
+  });
+
+  async function save() {
+    dirtyHtml.forEach(k => { const d = tplEds[k]; d.textContent = ''; cleanInto(liveEds[k], d); });
+    tpl.querySelector('#phase-edits').textContent = JSON.stringify(phaseEdits).replace(/</g, '\\u003c');
+    const html = '<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>'
+      + RESET + '</style></head><body>' + tpl.innerHTML + '</body></html>';
+    btnSave.disabled = true; say('Saving…');
+    try { await art.publish(html); say('Saved. Reloading to the new version…'); }
+    catch (err) {
+      const code = err && err.code;
+      if (code === 'conflict') say('Someone saved a newer version first; reloading to it. Your edits were not saved.');
+      else if (code === 'not_writer' || code === 'not_granted' || code === 'not_declared' || code === 'capability_disabled') {
+        say('This view is read-only, so edits can\'t be saved here.'); btnEdit.hidden = true;
+      } else if (code === 'rate_limited') { say('Saving too often. Wait a moment, then press Save again.'); btnSave.disabled = false; }
+      else { say('Save failed (' + (code || 'error') + '). Your edits are still on the page; try Save again.'); btnSave.disabled = false; }
+    }
+  }
+
+  btnEdit.addEventListener('click', () => setEditing(true));
+  btnSave.addEventListener('click', save);
+  btnDone.addEventListener('click', () => { if (dirty) location.reload(); else setEditing(false); });
+
+  // editing appears only where this page can save itself (the published artifact)
+  if (window.claude && typeof window.claude.use === 'function')
+    window.claude.use('artifact').then(a => { if (a) { art = a; btnEdit.hidden = false; } }).catch(() => {});
 })();
 </script>
