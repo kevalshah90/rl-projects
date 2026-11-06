@@ -1,18 +1,19 @@
 # Step 9: baseline on TRAIN tasks -> which tasks are trainable (0 < pass rate < 1).
 # The untrained model (Qwen3.5-9B) attempts each task num_rollouts times. Each episode:
-#   1. a Modal sandbox (L4 GPU) starts from the task's environment
+#   1. a Modal sandbox (A10G GPU, task.toml gpu_types[0]) starts from the task's environment
 #   2. the bash harness runs a multi-turn loop: model <-> shell + the MCP `kernel-tools_check` tool
 #   3. solution.py is copied out, then graded by tests/test.sh in a FRESH sandbox
 #   4. reward.json -> trace.rewards
 # Only train tasks decide what we train on; dev is for evaluation (configs/eval_dev.toml).
 # Run:  set -a; source .env; set +a      (VLLM_API_KEY, PRIME_API_KEY, SSL_CERT_FILE)
-#       uv run vf-eval @ configs/baseline_train.toml
-#       uv run python scripts/s09_baseline.py      (summarizes the newest run)
+#       caffeinate -dims uv run vf-eval @ configs/baseline_train.toml   (keep the Mac awake: the
+#                                 interception server and tunnel run here)
+#       uv run python scripts/s09_baseline.py RUN_DIR [RUN_DIR ...]   (pools batches)
 # Output: work.nosync/outputs/baseline_train/<run>/traces.jsonl  (one JSON line per episode)
 
 model = "Qwen/Qwen3.5-9B"
 num_rollouts = 4                 # attempts per task: pass rate in steps of 1/4 (see below)
-max_concurrent = 4               # episodes in flight = agent L4 sandboxes at once. GPUs at peak:
+max_concurrent = 4               # episodes in flight = agent A10G sandboxes at once. GPUs at peak:
                                  # 1 vLLM (H100) + 4 agents + ~1 grader = ~6 of the 10-GPU Modal limit
 push = false                     # keep results local (no upload to the Prime Hub)
 output_dir = "work.nosync/outputs/baseline_train"
@@ -28,8 +29,9 @@ max_tokens = 8192                # per model turn (thinking + reply); the episod
 
 [select]
 shuffle = true                   # random sample: the first tasks in id order may not be typical
-seed = 0                         # fixed seed -> the same 60 tasks on every run
-limit = 60                       # sample size. Next batch without overlap: skip = 60, no limit
+seed = 0                         # fixed seed -> the same order on every run
+skip = 30                        # batch 2: tasks 31-200 of the shuffled order. Batch 1 was
+limit = 170                      # skip = 0, limit = 30 (run ...--b5a0244c, 8 trainable)
 
 [env.taskset]
 id = "kernelbook_taskset"        # our loader (kernelbook_taskset.py): reads local task folders;

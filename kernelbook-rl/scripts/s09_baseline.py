@@ -1,8 +1,10 @@
 """Step 9: summarize a vf-eval run into per-task pass rates.
 
 Run from the project root (after `vf-eval @ configs/baseline_train.toml` or `configs/eval_dev.toml`):
-    uv run python scripts/s09_baseline.py [RUN_DIR]     # default: newest run under outputs/baseline_train
-Reads:  RUN_DIR/traces.jsonl        one JSON trace per episode, written by vf-eval
+    uv run python scripts/s09_baseline.py [RUN_DIR ...]   # default: newest run under outputs/baseline_train
+Reads:  RUN_DIR/traces.jsonl        one JSON trace per episode, written by vf-eval. Several run dirs
+                                    (e.g. batch 1 with skip=0, batch 2 with skip=30) are pooled per
+                                    task, so trainable.txt covers every batch, not just the last one.
 Writes: DATA/baseline.jsonl         one line per task: attempts, passes, pass_rate, turns, tokens
         DATA/splits/trainable.txt   TRAIN tasks with 0 < pass_rate < 1 (dev tasks never go here)
 
@@ -29,7 +31,7 @@ def summarize(episode: dict) -> dict:
 
     Each traces.jsonl line is an EPISODE: {"task", "ok", "errors", "traces": [trace], ...}.
     Our env has one agent, so `traces` holds exactly one trace (the agent's).
-    Example trace fields:  task.data.name, rewards {"solved": {"score": 1.0, "weight": 1.0}},
+    Example trace fields:  task.data.name, rewards {"reward": {"score": 1.0, "weight": 1.0}},
                            ok, stop_condition, nodes (sampled = model turns), timing
     Example output:        {"task": "kernelbook/00042-...", "reward": 1.0, "ok": True,
                             "stop": None, "turns": 8, "output_tokens": 9120, "seconds": 301.2}
@@ -51,9 +53,9 @@ def summarize(episode: dict) -> dict:
 
 
 def main() -> None:
-    run = Path(sys.argv[1]) if len(sys.argv) > 1 else max(
-        (OUTPUTS / "baseline_train").glob("*/traces.jsonl"), key=lambda p: p.stat().st_mtime).parent
-    episodes = [summarize(json.loads(line)) for line in open(run / "traces.jsonl")]
+    runs = [Path(a) for a in sys.argv[1:]] or [max(
+        (OUTPUTS / "baseline_train").glob("*/traces.jsonl"), key=lambda p: p.stat().st_mtime).parent]
+    episodes = [summarize(json.loads(line)) for run in runs for line in open(run / "traces.jsonl")]
 
     by_task = defaultdict(list)
     for e in episodes:
@@ -84,7 +86,8 @@ def main() -> None:
     else:
         print("not a train-only run: trainable.txt left unchanged")
 
-    print(f"run: {run}\n{len(episodes)} episodes; {len(rows)} of {len(by_task)} tasks "
+    print("runs:", *runs, sep="\n  ")
+    print(f"{len(episodes)} episodes; {len(rows)} of {len(by_task)} tasks "
           f"have at least one error-free attempt")
     for label, keep in [("always fail (p=0)", lambda p: p == 0),
                         ("mixed (0<p<1)  <- trainable", lambda p: 0 < p < 1),
