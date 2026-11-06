@@ -52,7 +52,7 @@ def task_toml(row: dict) -> dict:
          "metadata": {"source": "GPUMODE/KernelBook", "uuid": 42,
                       "module_name": "SumAggregator", "license": "Apache-2.0"},
          "agent": {"timeout_sec": 900},
-         "environment": {"docker_image": BASE_IMAGE, "gpus": 1, "gpu_types": ["L4"], ...,
+         "environment": {"docker_image": BASE_IMAGE, "gpus": 1, "gpu_types": ["A10G", "L4"], ...,
                          "mcp_servers": [{"name": "kernel-tools", ...,
                                           "args": [".../mcp_tools.py", "--module-name", "SumAggregator"]}]},
          "verifier": {"timeout_sec": 600, "environment_mode": "separate",
@@ -67,7 +67,7 @@ def task_toml(row: dict) -> dict:
             "agent": {"timeout_sec": 900},                    # 15 min cap per episode
             "environment": {                                  # the agent's container
                 "docker_image": BASE_IMAGE, "workdir": "/workspace", "network_mode": "no-network",
-                "gpus": 1, "gpu_types": ["L4"],               # so the agent can run its own kernel
+                "gpus": 1, "gpu_types": ["A10G", "L4"],       # agent runs its own kernel. verifiers uses only [0] (Modal takes one GPU type)
                 # The agent's `check` tool. stdio = the harness starts it as a child process inside
                 # this sandbox (no network, no extra container). The module name goes in as an
                 # argument, so it doesn't depend on how the harness passes env vars.

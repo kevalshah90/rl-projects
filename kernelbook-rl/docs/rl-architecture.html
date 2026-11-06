@@ -123,6 +123,9 @@ svg text { fill: var(--ink); font-family: var(--font-body); }
 .two-col div { min-width: 0; }
 .two-col h4 { margin: 0 0 4px; font-size: 15px; }
 
+.flow { margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--faint); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
+
 /* glossary */
 .table-scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
@@ -417,6 +420,16 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
       <div class="terms"><span class="label">RL terms in this phase</span><span id="cap-terms" style="display:contents"></span></div>
     </div>
     <ol class="phase-list" id="phase-list"></ol>
+  </section>
+
+  <section class="panel" aria-labelledby="baseline-h">
+    <h2 id="baseline-h">The train baseline: measuring the untrained policy</h2>
+    <p>Before any RL, the same episode runs over a sample of train tasks with the untrained Qwen3.5-9B. Nothing is learned; the rewards give each task a pass rate p = passes / 4. Only tasks with 0 &lt; p &lt; 1 give GRPO mixed groups to learn from, so they go into <code>splits/trainable.txt</code>.</p>
+    <pre class="flow">registry-train.json (382)  ──shuffle(seed=0), first 30──►  30 tasks
+each task × 4 rollouts (num_rollouts)                   =  120 episodes
+each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
+              → fresh grader sandbox → reward 0 or 1</pre>
+    <p>Run with <code>vf-eval @ configs/baseline_train.toml -n 30</code>, summarized by <code>s09_baseline.py</code>. Train only: dev stays held out for evaluation.</p>
   </section>
 
   <section class="panel" aria-labelledby="async-h">
