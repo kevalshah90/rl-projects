@@ -89,6 +89,16 @@ def main() -> None:
     print("runs:", *runs, sep="\n  ")
     print(f"{len(episodes)} episodes; {len(rows)} of {len(by_task)} tasks "
           f"have at least one error-free attempt")
+    # The before/after numbers (E0 vs the trained policy), computed over tasks with a clean attempt:
+    #   pass@1  mean over tasks of passes/attempts: chance one attempt solves a task (tasks weigh equally)
+    #   pass@k  share of tasks solved at least once in their k attempts (k = num_rollouts, usually 4)
+    # Example: A 1/4, B 0/4, C 4/4  ->  pass@1 = (0.25 + 0 + 1) / 3 = 42%,  pass@4 = 2/3 = 67%
+    if rows:
+        k = max(r["attempts"] for r in rows)
+        short = sum(r["attempts"] < k for r in rows)
+        print(f"pass@1 {sum(r['pass_rate'] for r in rows) / len(rows):.1%}   "
+              f"pass@{k} {sum(r['passes'] > 0 for r in rows) / len(rows):.1%}   "
+              f"(over {len(rows)} tasks" + (f"; {short} had < {k} clean attempts)" if short else ")"))
     for label, keep in [("always fail (p=0)", lambda p: p == 0),
                         ("mixed (0<p<1)  <- trainable", lambda p: 0 < p < 1),
                         ("always pass (p=1)", lambda p: p == 1)]:
