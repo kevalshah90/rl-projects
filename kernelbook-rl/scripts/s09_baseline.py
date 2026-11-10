@@ -5,7 +5,8 @@ Run from the project root (after `vf-eval @ configs/baseline_train.toml` or `con
 Reads:  RUN_DIR/traces.jsonl        one JSON trace per episode, written by vf-eval. Several run dirs
                                     (e.g. batch 1 with skip=0, batch 2 with skip=30) are pooled per
                                     task, so trainable.txt covers every batch, not just the last one.
-Writes: DATA/baseline.jsonl         one line per task: attempts, passes, pass_rate, turns, tokens
+Writes: DATA/baseline.jsonl         train runs: one line per task: attempts, passes, pass_rate, turns, tokens
+        DATA/eval_dev.jsonl         dev runs: the same lines (baseline.jsonl is left alone)
         DATA/splits/trainable.txt   TRAIN tasks with 0 < pass_rate < 1 (dev tasks never go here)
 
 Why "trainable": GRPO learns from the DIFFERENCE between attempts at the same task.
@@ -75,16 +76,18 @@ def main() -> None:
                      "mean_output_tokens": sum(e["output_tokens"] for e in eps) / n,
                      "mean_seconds": sum(e["seconds"] for e in eps) / n})
 
-    (DATA / "baseline.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     # Only train tasks may be selected for training: a dev (eval) run must never feed this list.
     # Trace names are "kernelbook/00034-simplemlp"; split files hold folder names "kernelbook-00034-...".
     train = set((DATA / "splits" / "train.txt").read_text().split())
     trainable = [r["task"] for r in rows
                  if 0 < r["pass_rate"] < 1 and r["task"].replace("/", "-") in train]
+    lines = "".join(json.dumps(r) + "\n" for r in rows)
     if all(r["task"].replace("/", "-") in train for r in rows):
+        (DATA / "baseline.jsonl").write_text(lines)
         (DATA / "splits" / "trainable.txt").write_text("".join(t + "\n" for t in trainable))
-    else:
-        print("not a train-only run: trainable.txt left unchanged")
+    else:   # dev run: keep the train baseline intact; per-task rows go to their own file
+        (DATA / "eval_dev.jsonl").write_text(lines)
+        print("not a train-only run: wrote eval_dev.jsonl; baseline.jsonl and trainable.txt unchanged")
 
     print("runs:", *runs, sep="\n  ")
     print(f"{len(episodes)} episodes; {len(rows)} of {len(by_task)} tasks "

@@ -44,9 +44,14 @@ Purpose: find tasks with 0 < pass rate < 1 (the only ones GRPO learns from). Not
 
 | Run | Policy | Tasks | pass@1 | pass@4 | Notes |
 |---|---|---|---|---|---|
-| E0 | untrained | 54 dev | _not run yet_ | | |
+| E0 (`eval_dev/...--6d73e277`) | untrained | 54 dev | **21.9%** | **42.6%** | 216 episodes, 212 clean; p=0 31, 0<p<1 22, p=1 1 |
 
 Rule of thumb: with 54 tasks x 4 at ~20%, only trust differences of roughly 8+ points.
+
+- E0 stop reasons (216): max_turns 173, agent_completed 38, harness_error 3, agent_timeout 1, sandbox_error 1.
+- Mean per episode: 27.0 turns, ~17.3K output tokens, 226 s. 3 tasks had < 4 clean attempts.
+- Dev matches train (21.9% vs 21.8% pass@1; 42.6% vs 45.5% pass@4): dev is not easier or harder.
+- Data: `work.nosync/data/eval_dev.jsonl` (per-task rows).
 
 ## 3. Log
 
@@ -87,6 +92,18 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 - `s09_baseline.py` prints pass@1 (mean of per-task pass rates) and pass@k (share of tasks
   solved at least once). Commit edf4a46.
 
+### 2026-11-09: dev eval E0 started
+- `configs/eval_dev.toml`, identical to the train baseline except registry (dev), output dir,
+  and no `[select]` (all 54 tasks). 54 x 4 = 216 episodes, under caffeinate, A10G.
+- Run dir `work.nosync/outputs/eval_dev/kernelbook_taskset--qwen--qwen3.5-9b--bash--6d73e277`.
+
+### 2026-11-09: dev eval E0 done
+- Finished 17:36. pass@1 **21.9%**, pass@4 **42.6%** over 54 dev tasks; 4/216 errored
+  (3 harness_error, 1 sandbox_error), excluded. This is the "before" number.
+- Incident: `s09_baseline.py` wrote dev per-task rows over `data/baseline.jsonl` (the 200 train
+  tasks). Restored from a backup; s09 now writes dev rows to `data/eval_dev.jsonl` and only train
+  runs touch `baseline.jsonl` / `trainable.txt`.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -120,6 +137,7 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 
 ## 7. Next
 
-1. Dev eval E0 (54 x 4, ~3.5-4 h).
-2. Training-loop smoke test on the 81 trainable tasks (~10-20 steps).
-3. First real training run; dev eval after; compare with E0.
+1. ~~Dev eval E0~~ done: 21.9% / 42.6%.
+2. Check prime-rl GRPO settings (std normalization, loss aggregation) against our Dr. GRPO choice.
+3. Training-loop smoke test on the 81 trainable tasks (~10-20 steps).
+4. First real training run; dev eval after (same config); compare with E0.
