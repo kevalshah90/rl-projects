@@ -104,6 +104,24 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
   tasks). Restored from a backup; s09 now writes dev rows to `data/eval_dev.jsonl` and only train
   runs touch `baseline.jsonl` / `trainable.txt`.
 
+### 2026-11-09: prime-rl GRPO settings checked (commit 389eacb, read from source)
+| Setting | prime-rl default | Our `rl_scratch/grpo.py` |
+|---|---|---|
+| Advantage | reward - group mean, **no std** (`orchestrator/algo/grpo.py`) | same (Dr. GRPO) |
+| Baseline | plain mean; `length_weighted_baseline = false` | plain mean |
+| Length penalty | off (`length_penalty = None`) | none |
+| Loss aggregation | `token` (sum / total loss tokens in batch); `prompt` optional | `token` default; sequence/prompt optional |
+| Ratio | trainer vs **inference (vLLM) logprobs**, no separate old-policy pass | new vs old logprobs |
+| Trust region | `ipo` loss: mask tokens whose \|p_train - p_infer\| > 0.3, cap ratio at 1e4 | PPO clip (0.2, 0.28) |
+| KL to reference | none by default | none |
+| Zero-advantage groups | **kept** (filter is opt-in `AdvRangeGate` via `curriculum.gates`) | `informative_groups` drops them |
+| Off-policy lag | async; tokens older than `max_staleness = 8` steps masked | on-policy |
+- Implications: the std question is settled (both no std). Main differences are IPO masking vs PPO clip,
+  async staleness, and unanimous groups diluting the token denominator unless the gate is on.
+- For the smoke test: keep defaults, but turn on the `[0, 0]` AdvRangeGate so groups that become
+  all-pass / all-fail during training don't dilute the gradient; consider `max_staleness` lower for a
+  closer match to our on-policy math.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -138,6 +156,6 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 ## 7. Next
 
 1. ~~Dev eval E0~~ done: 21.9% / 42.6%.
-2. Check prime-rl GRPO settings (std normalization, loss aggregation) against our Dr. GRPO choice.
+2. ~~Check prime-rl GRPO settings~~ done: no std, token-mean, IPO loss (see log).
 3. Training-loop smoke test on the 81 trainable tasks (~10-20 steps).
 4. First real training run; dev eval after (same config); compare with E0.
