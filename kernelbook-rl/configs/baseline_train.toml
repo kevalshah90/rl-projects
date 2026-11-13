@@ -30,8 +30,8 @@ max_tokens = 8192                # per model turn (thinking + reply); the episod
 [select]
 shuffle = true                   # random sample: the first tasks in id order may not be typical
 seed = 0                         # fixed seed -> the same order on every run
-skip = 30                        # batch 2: tasks 31-200 of the shuffled order. Batch 1 was
-limit = 170                      # skip = 0, limit = 30 (run ...--b5a0244c, 8 trainable)
+skip = 200                       # batch 3: tasks 201-382 (the rest of train). Earlier batches:
+limit = 182                      # 1: skip 0, limit 30 (...--b5a0244c); 2: skip 30, limit 170 (...--9ca93226)
 
 [env.taskset]
 id = "kernelbook_taskset"        # our loader (kernelbook_taskset.py): reads local task folders;

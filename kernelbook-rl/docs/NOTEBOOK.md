@@ -31,14 +31,18 @@ Purpose: find tasks with 0 < pass rate < 1 (the only ones GRPO learns from). Not
 | Run | Tasks | Episodes | Clean | pass@1 | pass@4 | p=0 | 0<p<1 | p=1 |
 |---|---|---|---|---|---|---|---|---|
 | batch 1 (`...--b5a0244c`) | 30 | 120 | 120 | 25% (30/120 episodes) | | 18 | 8 | 4 |
-| batch 1 + 2 pooled (`...--b5a0244c`, `...--9ca93226`) | 200 | 800 | 798 | **21.8%** | **45.5%** | 109 | **81** | 10 |
+| batch 1 + 2 pooled (`...--b5a0244c`, `...--9ca93226`) | 200 | 800 | 798 | 21.8% | 45.5% | 109 | 81 | 10 |
+| batch 3 (`...--0ff88a70`, tasks 201-382) | 182 | 728 | 727 | 18.1% | 36.8% | 115 | 57 | 10 |
+| **all 3 pooled (full train split)** | **382** | 1528 | 1525 | **20.0%** | **41.4%** | 224 | **138** | 20 |
 
 - Trainable 81 by pass rate: 45 at 1/4, 19 at 2/4, 17 at 3/4.
 - Stop reasons (800): max_turns 643, agent_completed 154, agent_timeout 2, harness_error 1.
 - Mean per episode: 27.3 turns, ~17.8K output tokens, 218 s.
 - Batch 2 tasks were harder than batch 1 early on (~12% vs 25% pass in the first ~130 episodes); pooled 21.8%.
-- 182 of 382 train tasks not yet baselined.
-- Data: `work.nosync/data/baseline.jsonl`, `work.nosync/data/splits/trainable.txt` (81).
+- Full pool (1528): stop reasons max_turns 1223, agent_completed 299, agent_timeout 4, harness_error 1,
+  sandbox_error 1; 3 errored, 3 tasks with < 4 clean attempts. Mean 27.1 turns, ~17.9K output tokens, 243 s.
+- Batch 3 is a bit harder (18.1% vs 21.8%), within noise for 4 samples/task; train pass@1 20.0% vs dev E0 21.9%.
+- Data: `work.nosync/data/baseline.jsonl` (382), `work.nosync/data/splits/trainable.txt` (**138**).
 
 ### 2.2 Dev eval (the before/after comparison)
 
@@ -114,13 +118,69 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 | Ratio | trainer vs **inference (vLLM) logprobs**, no separate old-policy pass | new vs old logprobs |
 | Trust region | `ipo` loss: mask tokens whose \|p_train - p_infer\| > 0.3, cap ratio at 1e4 | PPO clip (0.2, 0.28) |
 | KL to reference | none by default | none |
-| Zero-advantage groups | **kept** (filter is opt-in `AdvRangeGate` via `curriculum.gates`) | `informative_groups` drops them |
+| Zero-advantage groups | **dropped** by a built-in filter and replaced (`constant_trainer_batch_size = true`) | `informative_groups` drops them |
 | Off-policy lag | async; tokens older than `max_staleness = 8` steps masked | on-policy |
-- Implications: the std question is settled (both no std). Main differences are IPO masking vs PPO clip,
-  async staleness, and unanimous groups diluting the token denominator unless the gate is on.
-- For the smoke test: keep defaults, but turn on the `[0, 0]` AdvRangeGate so groups that become
-  all-pass / all-fail during training don't dilute the gradient; consider `max_staleness` lower for a
-  closer match to our on-policy math.
+- Implications: the std question is settled (both no std). Main differences are IPO masking vs PPO clip
+  and async staleness.
+- Correction (same day): I first wrote that unanimous groups are kept. `docs/algorithms.md` says the
+  orchestrator filters samples with zero advantage on all RL tokens and samples replacements, so the
+  `AdvRangeGate` is not needed for that.
+- For the smoke test: keep defaults; consider a lower `max_staleness` for a closer match to on-policy math.
+
+### 2026-11-11: train baseline batch 3 started (the remaining 182 train tasks)
+- `configs/baseline_train.toml` `[select]` skip = 200, limit = 182 (same seed-0 shuffle), so batches
+  1-3 cover all 382 train tasks. 728 episodes, concurrency 4 (10-GPU Modal limit), caffeinate, A10G.
+- Run dir `work.nosync/outputs/baseline_train/kernelbook_taskset--qwen--qwen3.5-9b--bash--0ff88a70`.
+- Goal: grow the trainable pool from 81 to ~150 (at the ~40% rate of batches 1-2).
+- 11:00-11:30: Modal A10G **capacity shortage**. 2 episodes failed with "Insufficient capacity to
+  create sandbox" after ~21 min each in `boot` (sandbox creation blocks, then errors); throughput fell to
+  ~8 episodes / 50 min. A probe at 11:55 got an A10G in 2 s (T4 4 s; L4/L40S/A100 not up in 180 s, possibly
+  our 10-GPU workspace cap), so the shortage was transient.
+- Own mistake: my first probes ran without `source .env` and failed on SSL (`SSL_CERT_FILE`), which
+  looked like "no GPU available". Always load `.env` before any Modal/vLLM script.
+- 12:17: stopped and resumed (`--resume`, logs/attempt_2): kept 11 clean episodes, 717 owed.
+- 12:22: paused at the user's request (moving location). 11 clean episodes saved (5 passed); backup of
+  traces in the scratchpad; no leftover Modal sandboxes. Resume with the same `--resume` command.
+- 13:34: resumed (logs/attempt_3), 717 owed. Mac on battery at start (81%); watcher alerts below 20%.
+- 17:39: paused again (user closing the lid): 171 traces saved (169 clean), no leftover sandboxes. Batch 3 looks harder so far (16% pass, 6/35 finished tasks trainable).
+- 22:02-22:35: vLLM would not restart after its idle scale-down: `kernelbook-vllm` function had
+  13 calls **pending with 0 runners** (`get_current_stats()`), though H100 sandboxes started in 1 s.
+  Plain `modal deploy` was skipped ("no changes"). Fix: `modal app stop` + `modal deploy` (same URL);
+  runner up in seconds, ping OK 22:38. Lesson: if vLLM calls sit pending, check backlog/runners first.
+- 22:38: resumed (logs/attempt_4), 559 owed, 169 clean kept.
+- 23:58-01:09: 3 isolated SandboxErrors (2x runtime killed exit 137, likely agent code OOM; 1x
+  "Sandbox is unavailable") + 1 harness error, out of ~130 episodes; pace 129 episodes/h. Watcher now
+  alerts on >= 3 sandbox errors within 30 min instead of 3 total.
+- 03:43-07:12 (Nov 12): **local DNS outage** on the Mac (`[Errno 8] nodename nor servname provided`,
+  tunnel `lookup s0.tunnel.pinfra.io: i/o timeout`). Every new sandbox failed instantly, so vf-eval
+  burned through the remaining tasks: run "finished" at 728/728 with **310 errored** (304 DNS), 76 of
+  182 tasks with no clean attempt. The watcher had exited on its 03:4x alert, so nobody saw it.
+  Errored episodes are excluded from scores (not counted as fails), so no data was corrupted.
+  Lesson: a fast-failing infra error looks like progress; the watcher must alert on error *bursts*
+  (now: >= 3 DNS errors -> alert) and keep watching rather than exit.
+- 08:04: DNS and vLLM OK; resumed (logs/attempt_5): 418 clean kept, 310 owed (81 tasks).
+  Pace 25-46 episodes/h (boot 134 s early, ~25 s later). Correction: the "129 episodes/h" above was
+  wrong; the real pre-outage pace was ~54/h. 7 new errors (2 DNS blips at 10:45, 5 harness exit 1 at
+  11:21-11:28).
+- ~12:20: paused (user): 575 traces (568 clean), 2 leftover sandboxes terminated, 0 live. 153 owed.
+- 18:51: resumed (logs/attempt_6): 568 clean kept, 160 owed (153 + the 7 errored), 42 tasks.
+- 19:00-23:20: **tunnel degraded**: only 21 episodes after 20:00 and 37 of 64 new episodes errored.
+  Mostly `harness 'bash' exited 1` with `openai.NotFoundError: 404` on the agent's model call (the
+  sandbox reaches vLLM through vf-eval's local tunnel), plus `Tunnel is inactive`, `send Login request
+  to plugin error`, DNS lookups for s0.tunnel.pinfra.io failing, and Modal exec/write errors. The
+  watcher only knew DNS-error text, so it missed this. Fix: stop vf-eval, restart (new tunnel).
+- 23:28: resumed (logs/attempt_7): 595 clean kept, 133 owed (38 tasks). Watcher now also alerts on
+  tunnel errors and on >= 6 errored rollouts in the attempt.
+- 23:28-23:33: every new episode failed at once with `TunnelError: Failed to create tunnel: Internal
+  Server Error` (17 episodes). Even `list_tunnels` returned 500: Prime Intellect's tunnel API was down
+  (server side, not our setup). Watcher caught it in 4 min; stopped vf-eval: 595 clean kept, 0 live
+  sandboxes. Polling the tunnel API every 5 min; resume when it answers.
+  Dependency note for the report: vf-eval's sandboxes reach our vLLM through Prime's tunnel, an external
+  single point of failure. For training, consider a direct route (Modal tunnel or vLLM URL directly).
+- 23:33-00:07: API flapped (OK, then 500 a minute later); auto-resume waited for 3 OK checks 2 min apart.
+- 00:07 (Nov 13): resumed (logs/attempt_8), 133 owed; finished ~02:20 with 728/728, **727 clean**
+  (1 sandbox_error left; not re-run). Pooled with batches 1-2 -> section 2.1.
+- Recurring `models call failed` warnings (vLLM calls retried after 30 s, then succeed); not yet causing failures.
 
 ## 4. Decisions (and why)
 
@@ -157,5 +217,6 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 
 1. ~~Dev eval E0~~ done: 21.9% / 42.6%.
 2. ~~Check prime-rl GRPO settings~~ done: no std, token-mean, IPO loss (see log).
-3. Training-loop smoke test on the 81 trainable tasks (~10-20 steps).
-4. First real training run; dev eval after (same config); compare with E0.
+3. ~~Baseline the remaining 182 train tasks~~ done: 382 tasks, 20.0% / 41.4%, 138 trainable.
+4. Training-loop smoke test on the 138 trainable tasks (~10-20 steps).
+5. First real training run; dev eval after (same config); compare with E0.
