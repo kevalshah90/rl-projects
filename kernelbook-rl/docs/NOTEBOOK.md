@@ -182,6 +182,24 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
   (1 sandbox_error left; not re-run). Pooled with batches 1-2 -> section 2.1.
 - Recurring `models call failed` warnings (vLLM calls retried after 30 s, then succeed); not yet causing failures.
 
+### 2026-11-13: host side moved to Modal (no Prime tunnel, no laptop)
+- Why: the agent's model calls go to vf-eval's *interception server*, which forwards them to vLLM
+  and records each turn into the trace (training needs this), so sandboxes can't call vLLM directly.
+  On the Mac, sandboxes reached that server only via Prime's tunnel service, which failed twice in
+  the baseline; the Mac also lost DNS once and needed 3 pauses.
+- `scripts/s10_modal_eval.py`: runs vf-eval in a Modal container (CPU, 24 h cap, `--detach`), publishes
+  the interception port with `modal.forward`, and sets verifiers' `custom` tunnel
+  (`interception.type = server`, `tunnel.type = custom`, url = the forward URL). Outputs go to the
+  Volume `kernelbook-runs` (committed every 2 min). Image: locked deps minus torch/CUDA (host never
+  runs kernels). Registries hold absolute Mac paths, so a container copy is written to /tmp.
+- `--resume` rejects any config change, and the forward URL is new per container: the script rewrites
+  the URL in the run's saved config (transport only, not an experimental setting).
+- Trade-off: one interception server (`server`) instead of the elastic pool (32 rollouts each); fine
+  for our 4-32 concurrent rollouts.
+- Smoke test (`modal_smoke/...--4d6651da`, task 00456-smoothl1loss, Mac baseline 4/4): 4/4 episodes
+  clean, 3/4 pass, 4 min 16 s, boot 20 s. Traces have the same structure as Mac runs (nodes with
+  token_ids/logprobs/mask fields; empty for both, since the eval client doesn't request them).
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -193,6 +211,7 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 | Dr. GRPO (no std) by default | Std normalization over-weights lucky passes in lopsided groups |
 | 4 rollouts per task for baseline | Cost; pass rates are coarse (steps of 1/4) |
 | A10G over L4 | L4 shortage hung sandbox creation (no timeout in verifiers) |
+| Host side (vf-eval / orchestrator) on Modal, not the Mac | Removes Prime's tunnel and laptop sleep/DNS/lid from the loop; same place training's orchestrator must run |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up
@@ -218,5 +237,6 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 1. ~~Dev eval E0~~ done: 21.9% / 42.6%.
 2. ~~Check prime-rl GRPO settings~~ done: no std, token-mean, IPO loss (see log).
 3. ~~Baseline the remaining 182 train tasks~~ done: 382 tasks, 20.0% / 41.4%, 138 trainable.
-4. Training-loop smoke test on the 138 trainable tasks (~10-20 steps).
-5. First real training run; dev eval after (same config); compare with E0.
+4. ~~Move host side off the Mac / Prime tunnel~~ done: `s10_modal_eval.py` (smoke 4/4 clean).
+5. Training-loop smoke test on the 138 trainable tasks (~10-20 steps).
+6. First real training run; dev eval after (same config); compare with E0.
