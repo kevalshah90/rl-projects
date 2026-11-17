@@ -21,6 +21,7 @@ should say **what**, **numbers**, **where the data is**, and **why it matters**.
 | Data | GPUMODE/KernelBook -> 11,162 rows kept by filter -> 500 Harbor tasks -> 436 pass oracle/nop validation |
 | Split | by module family (no near-duplicates across splits): train 382, dev 54 (378 groups) |
 | GRPO (from scratch, `rl_scratch/grpo.py`) | Dr. GRPO default: advantage = r - group mean (no std); token-mean loss; clip (0.2, 0.28) |
+| Policies / KL | Ratio pi_theta / mu against vLLM log probs (off-policy correction); **no KL penalty to a reference** (beta = 0). See log 2026-11-16 |
 
 ## 2. Results
 
@@ -200,6 +201,102 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
   clean, 3/4 pass, 4 min 16 s, boot 20 s. Traces have the same structure as Mac runs (nodes with
   token_ids/logprobs/mask fields; empty for both, since the eval client doesn't request them).
 
+### 2026-11-16: concepts for the write-up: the policies, on- vs off-policy, KL
+Facts about prime-rl below come from the 11-09 source read (commit 389eacb); the rest is
+standard RL background, written down so the report uses the terms consistently.
+
+**The policies (three copies of the model can matter)**
+
+| Name | Symbol | Where it lives | What it is used for |
+|---|---|---|---|
+| Behavior policy (sampler) | mu, "pi_old", "pi_vLLM" | vLLM on the H100, serving adapter version v_k | Generates every agent turn. Its log prob for each sampled token is recorded by the interception server into the trace (training client only; eval traces leave these fields empty). |
+| Learner (target) policy | pi_theta | Trainer (FSDP, base + LoRA adapter) | Recomputes log probs of the same tokens in its forward pass. The gradient flows only through these; AdamW updates only the adapter. |
+| Reference policy | pi_ref | Not loaded (frozen Qwen3.5-9B) | Only needed for a KL penalty, which we don't use (see below). With LoRA it would cost no extra memory: same weights with the adapter switched off. |
+
+The loop: mu samples, the grader scores, the orchestrator computes A = r - group mean, and the
+trainer moves pi_theta. The new adapter is then sent to vLLM, so pi_theta becomes the next mu.
+RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "off-policy" otherwise.
+
+**Where the setup is on-policy**
+- The data is always the model's own behavior, never a dataset or another model's outputs. In
+  that broad sense the whole thing is on-policy RL, as opposed to SFT or offline RL.
+- Rewards and advantages come straight from mu's rollouts and are never reweighted.
+- If training were fully synchronous (`max_staleness = 0`, one optimizer step per batch), mu and
+  pi_theta would hold the same weights, and the ratio would be 1 up to numerical noise.
+
+**Where it becomes off-policy (four sources, all ending up in the same per-token ratio)**
+1. **Async staleness (prime-rl):** batch B is sampled with v_{k-s} while the trainer is at v_k.
+   Tokens with s > `max_staleness` are masked (default 8; we plan 1 for the smoke test).
+2. **Mid-episode weight swaps:** an agent episode is up to 30 turns and 900 s long. If vLLM loads a
+   new adapter partway through, early turns come from one mu and later turns from another. This
+   is open unknown #5; check per-turn policy versions in the first training traces.
+3. **Engine mismatch:** even with identical weights, vLLM and the FSDP trainer compute slightly
+   different probabilities (different kernels, numeric precision, batching). This is the
+   "training-inference mismatch". It may be larger for Qwen3.5's hybrid linear attention, since
+   vLLM and the trainer use different implementations of those layers.
+4. **Several optimizer steps per batch (PPO-style; only if a loop around our scratch GRPO did it):**
+   after the first step, `old_logp` is out of date. This is PPO's classic off-policy part.
+   `grpo.py` today is the math of one update, so this doesn't apply yet.
+
+**How each side corrects for it**
+- Both use a per-token importance ratio, ratio = pi_theta(token) / mu(token), computed against the
+  **vLLM log probs**. Neither does a separate old-policy forward pass, so one ratio absorbs all
+  four sources above.
+- prime-rl (IPO loss): drops tokens where |p_train - p_infer| > 0.3 (a gap in probability, not in
+  ratio) and caps the ratio at 1e4.
+- Our `rl_scratch/grpo.py`: PPO clip (0.2, 0.28). Outside that range the clipped side carries no gradient.
+- Only token probabilities get the correction. Advantages still come from mu's rollouts. That's the
+  usual PPO/GRPO approximation, and it holds only while mu and pi_theta stay close. Hence the masks
+  and a small `max_staleness`.
+- To log in the smoke test: share of tokens masked by IPO, mean |ratio - 1|, a staleness
+  histogram, and a mismatch-KL estimate KL(mu || pi_theta) on the sampled tokens. That KL is a
+  diagnostic, not a loss term.
+
+**KL: two different uses**
+- (a) A **KL penalty to a reference** keeps pi_theta close to pi_ref. It's a regularizer
+  inherited from RLHF: maximize E[r] - beta * KL(pi_theta || pi_ref).
+- (b) The **behavior-to-learner KL** (mu vs pi_theta) measures how off-policy a batch is. It's
+  what PPO's clip, TRPO's constraint and IPO's mask keep small.
+- (b) is always present in effect, through the ratio/mask. (a) is a choice, discussed next.
+
+**Do we use a KL penalty? No (beta = 0 in both prime-rl's default and `grpo.py`).** Why:
+- *The reward is verifiable, not learned.* In RLHF the KL protects against over-optimizing a
+  reward model that is only an approximation. Ours is a sandboxed binary grader: there's no
+  learned model to over-optimize. Its real gaps (heuristic guard, readable seeds) are better
+  fixed in the grader. A KL term would only slow hacking down, not block it.
+- *The policy needs to move.* Pass@1 is 20%. A pull back toward the base model works against the
+  goal, and recent RL-with-verifiable-reward recipes (DAPO, Dr. GRPO) dropped it for that reason.
+- *There are already brakes:* LoRA rank 16 limits how far the weights can move, plus the IPO mask
+  or clip, a small learning rate, and short runs (15-100 steps).
+- *Cost:* a reference forward pass per batch. That's cheap with LoRA (adapter off) but an extra
+  ~18 GB weight copy for a full fine-tune.
+- **When to add it:** entropy collapse, broken tool-call or format behavior, a drop on dev or on
+  general ability, or as a paper ablation (beta in {0, 0.001, 0.01}).
+
+**Forward vs reverse KL** (pi = the learner, ref = the reference)
+- **Forward KL(ref || pi)** = E_{x~ref}[log ref(x)/pi(x)]. It's *mass-covering*: pi pays a lot
+  wherever ref has mass and pi doesn't, so pi spreads over everything ref does. The expectation is
+  over **ref's samples**, which we don't have. Minimizing it on such samples is just SFT or
+  distillation (cross-entropy).
+- **Reverse KL(pi || ref)** = E_{x~pi}[log pi(x)/ref(x)]. It's *mode-seeking* (zero-forcing): pi
+  can ignore parts of ref and focus on a few good modes, but can't put mass where ref has almost
+  none. The expectation is over **the policy's own samples**, which are exactly our rollouts, so
+  it can be computed for free. This is the RLHF one. The penalized objective has the closed-form
+  optimum pi* proportional to ref * exp(r / beta): the reference reweighted by reward.
+- Why reverse suits RL: its sampling distribution matches the one we already have, and
+  mode-seeking is what we want (concentrate on kernels that pass). A side effect is lower
+  diversity, which can show up as pass@k rising less than pass@1. Track both (see section 6).
+- Per-token estimators on sampled tokens, with q = ref(token) / pi(token) (Schulman's k1/k2/k3):
+  - k1 = -log q: unbiased, high variance, can be negative.
+  - k2 = 0.5 (log q)^2: biased but low variance.
+  - k3 = (q - 1) - log q: unbiased, never negative, low variance. GRPO (DeepSeekMath) adds this to the loss.
+  - Subtlety to verify before citing: an estimator that is unbiased for the KL *value* doesn't
+    automatically give the right *gradient* when used as a loss. k3-as-loss has been reported to
+    be biased for reverse KL, and with off-policy samples (from mu, not pi) it also needs the
+    importance ratio.
+  - It matters whether the KL goes in the reward (PPO-RLHF: per-token -beta log(pi/ref)) or in the
+    loss (GRPO). Only relevant if we turn KL on.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -212,6 +309,8 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 | 4 rollouts per task for baseline | Cost; pass rates are coarse (steps of 1/4) |
 | A10G over L4 | L4 shortage hung sandbox creation (no timeout in verifiers) |
 | Host side (vf-eval / orchestrator) on Modal, not the Mac | Removes Prime's tunnel and laptop sleep/DNS/lid from the loop; same place training's orchestrator must run |
+| No KL penalty to the reference (beta = 0) | Verifiable reward (no reward model to over-optimize); policy must move far from 20% pass@1; LoRA + IPO/clip already limit drift. Revisit on entropy collapse / format drift |
+| Importance ratio against vLLM log probs, small `max_staleness` | One ratio corrects async lag, mid-episode swaps and engine mismatch; keeping lag small keeps the advantage approximation valid |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up
@@ -222,6 +321,8 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
   (lookup-table hack possible); edits to the agent's own `reference.py` aren't tracked.
 - **Hardware change:** validation on L4, rollouts on A10G.
 - **Token data:** eval traces (vf-eval `EvalClient`) have no token ids / logprobs; training must use the prime-rl client.
+- **Off-policy data:** training batches are up to `max_staleness` versions old and carry vLLM-vs-trainer numeric
+  mismatch; report the IPO-masked fraction and mismatch KL so readers can judge how on-policy the run was.
 - **Infra failures excluded:** errored episodes are dropped from pass rates, not counted as fails.
 
 ## 6. Ideas for the report / paper
@@ -238,5 +339,6 @@ vLLM serving + vf-eval, GRPO math with unit tests. Commits 7e0ef97 .. 560443a.
 2. ~~Check prime-rl GRPO settings~~ done: no std, token-mean, IPO loss (see log).
 3. ~~Baseline the remaining 182 train tasks~~ done: 382 tasks, 20.0% / 41.4%, 138 trainable.
 4. ~~Move host side off the Mac / Prime tunnel~~ done: `s10_modal_eval.py` (smoke 4/4 clean).
-5. Training-loop smoke test on the 138 trainable tasks (~10-20 steps).
+5. Training-loop smoke test on the 138 trainable tasks (~10-20 steps). Log: IPO-masked fraction,
+   mean |ratio - 1|, staleness histogram, mismatch KL(mu || pi_theta), entropy, per-turn policy version.
 6. First real training run; dev eval after (same config); compare with E0.
