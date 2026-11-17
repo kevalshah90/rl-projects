@@ -297,6 +297,34 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   - It matters whether the KL goes in the reward (PPO-RLHF: per-token -beta log(pi/ref)) or in the
     loss (GRPO). Only relevant if we turn KL on.
 
+### 2026-11-17: part 1, check 1: prime-rl Modal image builds (`scripts/s11_prime_rl_image.py`)
+- **What:** a Modal image for prime-rl's three processes (inference, orchestrator, trainer). It's leaner
+  than prime-rl's `Dockerfile.cuda`, which also builds UCX, NIXL and AWS EFA for multi-node use.
+  Layers:
+  - `nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04` + Python 3.12 + uv 0.11.9;
+  - prime-rl @ `389eacb` with its submodules;
+  - `uv sync --frozen --no-dev --extra gpu --extra flash-attn`;
+  - `modal==1.5.1`;
+  - our `kernel_env/`, `kernelbook_taskset.py`, configs and tasks.
+- **Result** (a check run on CPU in the image):
+  - versions: prime-rl 0.10.0, torch 2.14.0+cu130, vLLM 0.33.0, transformers 5.20.2,
+    flash-linear-attention 0.6.0, flash-attn 2.8.3, harbor 0.24.0, verifiers 0.4.2.dev20 (`a12316c`);
+  - all imports work (`prime_rl`, `verifiers`, `renderers`, `vllm`, `fla`), and `rl --help` exits 0;
+  - a full build takes ~5-10 min; a change to our own code only rebuilds the top layer.
+- **Issue 1: `--locked` fails.** prime-rl's lock uses a rolling cooldown
+  (`exclude-newer-span = "P7D"`), so re-resolving on a later day differs from the lock. Used
+  `--frozen` instead: it installs exactly the lock's versions without re-resolving.
+- **Issue 2: `modal` missing.** prime-rl depends on `verifiers[harbor]` without the modal extra. Our
+  orchestrator creates the agent and grader sandboxes on Modal, so I added `modal==1.5.1`, the
+  version in prime-rl's lock.
+- **Found for check 2:** our `kernelbook_taskset.py` doesn't import against prime-rl's verifiers.
+  - `HarborEnv` was removed in `269ff7b` ("Own task workspaces and Compose services through
+    deployments").
+  - prime-rl's verifiers (`a12316c`) is 183 commits ahead of ours (`da75527`, an ancestor), and 13 of
+    those commits touch the Harbor taskset.
+  - `HarborTaskset`, `HarborTask` and `parse_task` still exist.
+- **Not tested yet** (needs a GPU, check 4): Modal's driver vs CUDA 13, and loading Qwen3.5-9B in the trainer.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -311,6 +339,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Host side (vf-eval / orchestrator) on Modal, not the Mac | Removes Prime's tunnel and laptop sleep/DNS/lid from the loop; same place training's orchestrator must run |
 | No KL penalty to the reference (beta = 0) | Verifiable reward (no reward model to over-optimize); policy must move far from 20% pass@1; LoRA + IPO/clip already limit drift. Revisit on entropy collapse / format drift |
 | Importance ratio against vLLM log probs, small `max_staleness` | One ratio corrects async lag, mid-episode swaps and engine mismatch; keeping lag small keeps the advantage approximation valid |
+| Lean prime-rl image (gpu + flash-attn extras), `uv sync --frozen` | Single node, 2 H100s needs no UCX/NIXL/EFA; `--frozen` = prime-rl's exact tested versions (`--locked` fails on its rolling cooldown) |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up
