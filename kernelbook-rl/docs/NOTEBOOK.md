@@ -325,6 +325,53 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   - `HarborTaskset`, `HarborTask` and `parse_task` still exist.
 - **Not tested yet** (needs a GPU, check 4): Modal's driver vs CUDA 13, and loading Qwen3.5-9B in the trainer.
 
+### 2026-11-17: part 1, check 2: our taskset vs prime-rl's verifiers (`da75527` -> `a12316c`)
+- **Diff:** `a12316c` is 183 commits ahead of ours. 13 of them touch the Harbor taskset: `env.py`
+  (`HarborEnv`) and `compose.py` were deleted and `taskset.py` was rewritten. Grading moved into
+  the common rollout code (`580b173`, `269ff7b`), driven by each task's `scoring.mode`.
+- **Same behavior (read from code, then parsed in the s11 image):**
+  - all 382 train + 54 dev tasks parse;
+  - `environment_mode = "separate"` -> `scoring.mode = "isolated"`: a fresh box with the same image
+    (`fresh_copy`), network `allow = []` (from `no-network`), and only `/workspace/solution.py` crosses;
+  - `reward_key = "reward"`, other `reward.json` keys become metrics;
+  - the `ignore_timeouts` default is unchanged (we set it to false).
+- **Fixed:** `kernelbook_taskset.py` exports `HarborEnv` only if it exists, so one file works on
+  both versions (eval/E0 on `da75527`, training on `a12316c`).
+- **Renamed:** `vf-eval` -> `vf-run` in the new verifiers.
+- **Blocker:** `682e8dfb1` (2026-10-19) removed the built-in Modal runtime. Built-ins are now
+  `subprocess`, `docker` and `prime`; other providers load as plugins (`type = "custom"`,
+  `import_path` = a `RuntimeBackend` subclass), checked with `tests/unit/test_runtimes.py --runtime`.
+- **Decision:** port Modal as our own runtime plugin rather than switch to Prime sandboxes, pin an
+  older prime-rl, or force our verifiers into prime-rl. Why:
+  - it keeps the same A10G hardware and images as the baseline and E0, so before/after numbers
+    stay comparable;
+  - it uses the supported extension point and its test suite.
+
+### 2026-11-17: check 2 (cont.): Modal runtime plugin (`modal_runtime.py`) passes verifiers' runtime suite
+- **What:** verifiers' Modal runtime as of `da75527` (the code that ran the baseline and E0), moved
+  onto the new plugin contract (`RuntimeBackend` + `CustomRuntimeConfig`, `type = "custom"`,
+  `import_path = "modal_runtime.ModalBackend"`). It declares task images + port exposure; no user
+  switching, no Compose (same as before). Modal client 1.6.1 (the baseline's version) is in its own
+  image layer.
+- **Result:** `tests/unit/test_runtimes.py --runtime <plugin>`: **22/22 passed** in 8.7 s:
+  - run, exec, background processes, files, task images, port exposure and network policies all work;
+  - user switching and Compose are refused up front;
+  - 0 leftover sandboxes.
+- **Bug found and fixed:** `run` left stdin open, so a stdin-reading command (bare `cat`, `python`)
+  hung forever. The old Modal runtime had the same latent bug. Now it is wrapped as
+  `sh -c 'exec "$@" < /dev/null'`, as the base class does.
+- **Incident:** the first suite run (not detached) stalled ~27 min on that hang. Then the Mac lost
+  DNS (~14:03), Modal stopped the app, and one test sandbox was orphaned (its owner was hard-killed,
+  so teardown never ran). I found it with `modal.Sandbox.list` and terminated it (~30 min CPU).
+- **Changes from the incident:**
+  - checks run with `modal run --detach`, live `-v` output, and `pytest-timeout` at 300 s;
+  - new plugin field `sandbox_timeout` (default 2 h, was a fixed 24 h) caps the bill for orphans.
+- **To do before training:** an orphan sweep that terminates `verifiers-v1` sandboxes older than the
+  longest episode. A hard-killed orchestrator would orphan every in-flight sandbox.
+- **Next (finishes check 2):** one real KernelBook episode through prime-rl's verifiers (`vf-run`)
+  with the plugin: A10G agent box -> vLLM -> isolated grader box -> reward. Compare its trace and
+  reward with the da75527 smoke test (00456-smoothl1loss).
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -340,6 +387,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | No KL penalty to the reference (beta = 0) | Verifiable reward (no reward model to over-optimize); policy must move far from 20% pass@1; LoRA + IPO/clip already limit drift. Revisit on entropy collapse / format drift |
 | Importance ratio against vLLM log probs, small `max_staleness` | One ratio corrects async lag, mid-episode swaps and engine mismatch; keeping lag small keeps the advantage approximation valid |
 | Lean prime-rl image (gpu + flash-attn extras), `uv sync --frozen` | Single node, 2 H100s needs no UCX/NIXL/EFA; `--frozen` = prime-rl's exact tested versions (`--locked` fails on its rolling cooldown) |
+| Modal sandboxes via our own verifiers runtime plugin (training) | prime-rl's verifiers dropped built-in Modal; a plugin keeps A10G + same images as baseline/E0 (comparability) |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up

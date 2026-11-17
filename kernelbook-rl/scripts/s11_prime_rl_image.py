@@ -48,10 +48,14 @@ image = (
         # to prove the lock is current, and prime-rl's lock uses a ROLLING cooldown
         # (exclude-newer-span = "P7D"), so a re-resolve on a later day differs and --locked fails.
         f"cd {APP} && uv sync --frozen --no-dev --extra gpu --extra flash-attn",
-        # prime-rl depends on verifiers[harbor] only, without the modal extra; our orchestrator
-        # creates the agent/grader sandboxes on Modal, so add the client. 1.5.1 = the version in
-        # prime-rl's own uv.lock (keeps it consistent with that verifiers).
-        f"uv pip install --python {VENV}/bin/python modal==1.5.1",
+    )
+    # Our additions, in their own layer so changing them doesn't redo the ~15 GB sync above.
+    #   modal 1.6.1: the client our Modal runtime plugin (modal_runtime.py) calls. prime-rl's
+    #     verifiers no longer imports modal at all; 1.6.1 is what the same runtime code ran
+    #     with in our baseline and E0.
+    #   pytest + pytest-asyncio: verifiers' runtime test suite, run against the plugin.
+    .run_commands(
+        f"uv pip install --python {VENV}/bin/python modal==1.6.1 pytest pytest-asyncio pytest-timeout",
     )
     .env({
         "PATH": f"{VENV}/bin:/usr/local/bin:/usr/bin:/bin",   # `rl`, `vf-eval`, python -> the venv
@@ -59,6 +63,7 @@ image = (
     })
     .add_local_dir(PROJECT / "kernel_env", f"{KB}/kernel_env", ignore=_skip)
     .add_local_file(PROJECT / "kernelbook_taskset.py", f"{KB}/kernelbook_taskset.py")
+    .add_local_file(PROJECT / "modal_runtime.py", f"{KB}/modal_runtime.py")
     .add_local_dir(PROJECT / "configs", f"{KB}/configs", ignore=_skip)
     .add_local_dir(PROJECT / "work.nosync/tasks", f"{KB}/work.nosync/tasks", ignore=_skip)
 )
@@ -101,6 +106,87 @@ def check() -> None:
     sh("python -c 'import kernelbook_taskset as k; print(\"kernelbook_taskset ok:\", k.__file__)'")
 
 
+TASKSET_CHECK = r"""
+# Check 2: parse our tasks with prime-rl's verifiers and show what grading will do.
+import json, sys
+from pathlib import Path
+import kernelbook_taskset as k
+from verifiers.v1.tasksets.harbor import HarborConfig
+
+print("HarborEnv exported:", k.HarborEnv is not None, "| __all__:", k.__all__)
+for registry, dataset in [("registry-train.json", "kernelbook-train"), ("registry-dev.json", "kernelbook-dev")]:
+    cfg = HarborConfig(registry_path=Path(sys.argv[1]) / registry, dataset=dataset, ignore_timeouts=False)
+    tasks = list(k.KernelBookTaskset(cfg).load())
+    print(f"{dataset}: {len(tasks)} tasks parsed")
+t = tasks[0].data
+v = t.verifier
+print("example:", t.name)
+print("  agent box:   image", t.image, "| workdir", t.workdir, "| gpu", t.resources.gpu, "| network allow", t.network.allow)
+print("  mcp servers:", [s["name"] if isinstance(s, dict) else getattr(s, "name", s) for s in t.mcp_servers])
+print("  scoring:     mode", t.scoring.mode, "| network", t.scoring.network)
+print("  grader box:  fresh_copy", v.fresh_copy, "| network allow", v.network.allow, "| gpu", (v.resources.gpu if v.resources else None))
+print("  artifacts:  ", [a.path if hasattr(a, "path") else a for a in t.artifacts])
+print("  reward_key: ", tasks[0].config.reward_key)
+"""
+
+
+def container_registries() -> Path:
+    """Registries hold Mac paths; rewrite them to the container's task folders (as s10 does)."""
+    import json
+    out = Path("/tmp/registries")
+    out.mkdir(exist_ok=True)
+    for name in ["registry-train.json", "registry-dev.json"]:
+        data = json.loads((KB / "work.nosync/tasks" / name).read_text())
+        for dataset in data:
+            for task in dataset["tasks"]:
+                task["path"] = str(KB / "work.nosync/tasks" / Path(task["path"]).name)
+        (out / name).write_text(json.dumps(data))
+    return out
+
+
+@app.function(cpu=2, memory=8192, timeout=30 * 60)
+def check_taskset() -> None:
+    import subprocess
+
+    regs = container_registries()
+    for cmd in (
+        ["python", "-c", TASKSET_CHECK, str(regs)],
+        # Our real eval config through the new CLI (vf-eval was renamed vf-run after da75527):
+        # resolve + validate only, no rollouts.
+        ["vf-run", "@", "configs/baseline_train.toml", "--dry-run",
+         "--env.taskset.registry_path", str(regs / "registry-train.json"),
+         "-o", "/tmp/dry"],
+    ):
+        print("\n$", " ".join(c if len(c) < 80 else c[:40] + "..." for c in cmd), flush=True)
+        r = subprocess.run(cmd, cwd=KB, capture_output=True, text=True)
+        print((r.stdout + r.stderr).strip()[-4000:], flush=True)
+        print(f"-> exit {r.returncode}", flush=True)
+    subprocess.run("find /tmp/dry -name '*.json' | head -3", shell=True)
+
+
+runs = modal.Volume.from_name("kernelbook-runs", create_if_missing=True)
+
+
+@app.function(cpu=2, memory=8192, timeout=60 * 60, volumes={"/runs": runs})
+def check_runtime() -> None:
+    """verifiers' runtime contract tests against our Modal plugin. Each test starts real
+    (CPU) Modal sandboxes from this container; declared features must work, undeclared
+    ones (user switching, Compose) must be refused before anything is provisioned.
+    Output streams live (-v, one line per test); a test over 300 s fails instead of hanging;
+    the JUnit report lands in the Volume at checks/runtime_tests.xml."""
+    import json
+    import subprocess
+
+    plugin = json.dumps({"type": "custom", "import_path": "modal_runtime.ModalBackend"})
+    cmd = ["python", "-m", "pytest", "tests/unit/test_runtimes.py", "--runtime", plugin,
+           "-p", "no:cacheprovider", "-v", "-rA", "--timeout", "300",
+           "--junitxml", "/runs/checks/runtime_tests.xml"]
+    print("$", " ".join(cmd), flush=True)
+    code = subprocess.run(cmd, cwd=APP / "deps/verifiers").returncode   # not captured: live
+    runs.commit()
+    print(f"-> exit {code}", flush=True)
+
+
 @app.local_entrypoint()
-def main() -> None:
-    check.remote()
+def main(which: str = "image") -> None:
+    {"image": check, "taskset": check_taskset, "runtime": check_runtime}[which].remote()

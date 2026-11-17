@@ -5,8 +5,8 @@ and reads the exported copy. For a registry whose tasks are LOCAL paths (ours, f
 s05/s08), Harbor uses the folders in place and exports nothing, so verifiers fails
 renaming an export folder that was never created.
 This subclass changes only that: it reads the task folders listed in the registry.
-Parsing each task (task.toml, MCP servers, GPU, timeouts) and grading (HarborEnv's
-separate verifier box) are verifiers' own code, unchanged.
+Parsing each task (task.toml, MCP servers, GPU, timeouts) and grading (a separate verifier
+box) are verifiers' own code, unchanged.
 
 Use:  [env.taskset] id = "kernelbook_taskset"   (verifiers imports this module by that name;
       it must be top-level, and importable because the editable install puts the project
@@ -18,8 +18,19 @@ Example: registry-dev.json, dataset "kernelbook-dev" -> 54 HarborTasks, the firs
 import json
 from pathlib import Path
 
-from verifiers.v1.tasksets.harbor import HarborEnv, HarborTask, HarborTaskset
+from verifiers.v1.tasksets.harbor import HarborTask, HarborTaskset
 from verifiers.v1.tasksets.harbor.taskset import parse_task
+
+# Two verifiers versions use this file:
+#   da75527 (our project; vf-eval, E0): separate grading lives in the taskset's env, HarborEnv,
+#           which must be exported below or verifiers falls back to grading in the agent's box.
+#   a12316c (prime-rl's submodule; training): HarborEnv is gone (commit 269ff7b). Each task's
+#           `scoring.mode` ("isolated" for environment_mode = "separate") makes the common rollout
+#           code grade in a fresh box, so there is no env to export.
+try:
+    from verifiers.v1.tasksets.harbor import HarborEnv
+except ImportError:
+    HarborEnv = None
 
 
 class KernelBookTaskset(HarborTaskset):
@@ -31,6 +42,5 @@ class KernelBookTaskset(HarborTaskset):
             yield HarborTask(parse_task(Path(entry["path"]), idx, self.config), self.config.task)
 
 
-# verifiers finds the taskset and its env through __all__. Exporting HarborEnv keeps
-# separate grading: without it, verifiers would fall back to a single-box env.
-__all__ = ["KernelBookTaskset", "HarborEnv"]
+# verifiers finds the taskset (and, on da75527, its env) through __all__.
+__all__ = ["KernelBookTaskset"] + (["HarborEnv"] if HarborEnv is not None else [])
