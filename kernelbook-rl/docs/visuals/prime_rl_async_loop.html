@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>prime-rl async loop</title><meta name="description" content="Animated prime-rl loop (orchestrator, vLLM inference, trainer, agent sandboxes, grader) highlighting async overlap and staleness.">
+<!-- KernelBook RL notebook visual. Self-contained: open in a browser (no build, no network). -->
+<style>
+:root{--text-primary:#1f1e1d;--text-secondary:#5f5e5a;--text-muted:#888780;--text-accent:#185FA5;--text-warning:#854F0B;--surface-0:#f5f4ef;--surface-1:#f1efe8;--surface-2:#ffffff;--bg-accent:#E6F1FB;--border:rgba(31,30,29,.15);--border-strong:rgba(31,30,29,.3);--border-accent:#85B7EB;--border-warning:#EF9F27;--radius:8px;--b:#888780;--t:#5f5e5a;--p:#1f1e1d;--s:#5f5e5a;--bg2:#f1efe8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--text-primary:#ecebe6;--text-secondary:#c2c0b6;--text-muted:#9c9a92;--text-accent:#85B7EB;--text-warning:#FAC775;--surface-0:#1f1e1d;--surface-1:#2a2927;--surface-2:#262624;--bg-accent:#0C447C;--border:rgba(236,235,230,.15);--border-strong:rgba(236,235,230,.3);--border-accent:#378ADD;--border-warning:#BA7517;--b:#9c9a92;--t:#c2c0b6;--p:#ecebe6;--s:#c2c0b6;--bg2:#2a2927;color-scheme:dark}}
+:root[data-theme="dark"]{--text-primary:#ecebe6;--text-secondary:#c2c0b6;--text-muted:#9c9a92;--text-accent:#85B7EB;--text-warning:#FAC775;--surface-0:#1f1e1d;--surface-1:#2a2927;--surface-2:#262624;--bg-accent:#0C447C;--border:rgba(236,235,230,.15);--border-strong:rgba(236,235,230,.3);--border-accent:#378ADD;--border-warning:#BA7517;--b:#9c9a92;--t:#c2c0b6;--p:#ecebe6;--s:#c2c0b6;--bg2:#2a2927;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px;background:var(--surface-0);color:var(--text-primary);font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;background:var(--surface-2);border:0.5px solid var(--border);border-radius:12px;padding:16px 20px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+svg text{font-family:inherit}
+.t{font-size:14px;fill:var(--text-primary)}.ts{font-size:12px;fill:var(--text-secondary)}.th{font-size:14px;font-weight:500;fill:var(--text-primary)}
+.box{fill:var(--surface-1);stroke:var(--border-strong)}
+.arr{stroke:var(--t);stroke-width:1.5;fill:none}.leader{stroke:var(--t);stroke-width:.5;stroke-dasharray:3 3;fill:none}
+button{font:inherit;font-size:13px;padding:6px 12px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:transparent;color:var(--text-primary);cursor:pointer}
+button:hover{background:var(--surface-1)}button:active{transform:scale(.98)}
+.c-purple>rect,.c-purple>circle,.c-purple>ellipse,.c-purple>polygon,rect.c-purple,circle.c-purple,ellipse.c-purple{fill:#EEEDFE;stroke:#534AB7}.c-purple>.th,.c-purple>.t{fill:#3C3489}.c-purple>.ts{fill:#534AB7}
+.c-teal>rect,.c-teal>circle,.c-teal>ellipse,.c-teal>polygon,rect.c-teal,circle.c-teal,ellipse.c-teal{fill:#E1F5EE;stroke:#0F6E56}.c-teal>.th,.c-teal>.t{fill:#085041}.c-teal>.ts{fill:#0F6E56}
+.c-coral>rect,.c-coral>circle,.c-coral>ellipse,.c-coral>polygon,rect.c-coral,circle.c-coral,ellipse.c-coral{fill:#FAECE7;stroke:#993C1D}.c-coral>.th,.c-coral>.t{fill:#712B13}.c-coral>.ts{fill:#993C1D}
+.c-pink>rect,.c-pink>circle,.c-pink>ellipse,.c-pink>polygon,rect.c-pink,circle.c-pink,ellipse.c-pink{fill:#FBEAF0;stroke:#993556}.c-pink>.th,.c-pink>.t{fill:#72243E}.c-pink>.ts{fill:#993556}
+.c-gray>rect,.c-gray>circle,.c-gray>ellipse,.c-gray>polygon,rect.c-gray,circle.c-gray,ellipse.c-gray{fill:#F1EFE8;stroke:#5F5E5A}.c-gray>.th,.c-gray>.t{fill:#444441}.c-gray>.ts{fill:#5F5E5A}
+.c-blue>rect,.c-blue>circle,.c-blue>ellipse,.c-blue>polygon,rect.c-blue,circle.c-blue,ellipse.c-blue{fill:#E6F1FB;stroke:#185FA5}.c-blue>.th,.c-blue>.t{fill:#0C447C}.c-blue>.ts{fill:#185FA5}
+.c-green>rect,.c-green>circle,.c-green>ellipse,.c-green>polygon,rect.c-green,circle.c-green,ellipse.c-green{fill:#EAF3DE;stroke:#3B6D11}.c-green>.th,.c-green>.t{fill:#27500A}.c-green>.ts{fill:#3B6D11}
+.c-amber>rect,.c-amber>circle,.c-amber>ellipse,.c-amber>polygon,rect.c-amber,circle.c-amber,ellipse.c-amber{fill:#FAEEDA;stroke:#854F0B}.c-amber>.th,.c-amber>.t{fill:#633806}.c-amber>.ts{fill:#854F0B}
+.c-red>rect,.c-red>circle,.c-red>ellipse,.c-red>polygon,rect.c-red,circle.c-red,ellipse.c-red{fill:#FCEBEB;stroke:#A32D2D}.c-red>.th,.c-red>.t{fill:#791F1F}.c-red>.ts{fill:#A32D2D}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) body{}}
+</style>
+<style media="(prefers-color-scheme: dark)">
+.c-purple>rect,.c-purple>circle,.c-purple>ellipse,.c-purple>polygon,rect.c-purple,circle.c-purple,ellipse.c-purple{fill:#3C3489;stroke:#AFA9EC}.c-purple>.th,.c-purple>.t{fill:#CECBF6}.c-purple>.ts{fill:#AFA9EC}
+.c-teal>rect,.c-teal>circle,.c-teal>ellipse,.c-teal>polygon,rect.c-teal,circle.c-teal,ellipse.c-teal{fill:#085041;stroke:#5DCAA5}.c-teal>.th,.c-teal>.t{fill:#9FE1CB}.c-teal>.ts{fill:#5DCAA5}
+.c-coral>rect,.c-coral>circle,.c-coral>ellipse,.c-coral>polygon,rect.c-coral,circle.c-coral,ellipse.c-coral{fill:#712B13;stroke:#F0997B}.c-coral>.th,.c-coral>.t{fill:#F5C4B3}.c-coral>.ts{fill:#F0997B}
+.c-pink>rect,.c-pink>circle,.c-pink>ellipse,.c-pink>polygon,rect.c-pink,circle.c-pink,ellipse.c-pink{fill:#72243E;stroke:#ED93B1}.c-pink>.th,.c-pink>.t{fill:#F4C0D1}.c-pink>.ts{fill:#ED93B1}
+.c-gray>rect,.c-gray>circle,.c-gray>ellipse,.c-gray>polygon,rect.c-gray,circle.c-gray,ellipse.c-gray{fill:#444441;stroke:#B4B2A9}.c-gray>.th,.c-gray>.t{fill:#D3D1C7}.c-gray>.ts{fill:#B4B2A9}
+.c-blue>rect,.c-blue>circle,.c-blue>ellipse,.c-blue>polygon,rect.c-blue,circle.c-blue,ellipse.c-blue{fill:#0C447C;stroke:#85B7EB}.c-blue>.th,.c-blue>.t{fill:#B5D4F4}.c-blue>.ts{fill:#85B7EB}
+.c-green>rect,.c-green>circle,.c-green>ellipse,.c-green>polygon,rect.c-green,circle.c-green,ellipse.c-green{fill:#27500A;stroke:#97C459}.c-green>.th,.c-green>.t{fill:#C0DD97}.c-green>.ts{fill:#97C459}
+.c-amber>rect,.c-amber>circle,.c-amber>ellipse,.c-amber>polygon,rect.c-amber,circle.c-amber,ellipse.c-amber{fill:#633806;stroke:#EF9F27}.c-amber>.th,.c-amber>.t{fill:#FAC775}.c-amber>.ts{fill:#EF9F27}
+.c-red>rect,.c-red>circle,.c-red>ellipse,.c-red>polygon,rect.c-red,circle.c-red,ellipse.c-red{fill:#791F1F;stroke:#F09595}.c-red>.th,.c-red>.t{fill:#F7C1C1}.c-red>.ts{fill:#F09595}
+</style>
+</head><body><main>
+<h2 class="sr-only">Animated prime-rl loop showing asynchronous overlap: the next step's attempts are sampled with the old policy while the trainer updates, so the next batch arrives one version stale.</h2>
+<style>
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.ph{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0 10px}
+.pd{font-size:11px;padding:3px 8px;border-radius:var(--radius);border:0.5px solid var(--border);color:var(--text-secondary);cursor:pointer;background:transparent}
+.pd.on{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}
+.pd.as{border-color:var(--border-warning)}
+.cap{background:var(--surface-1);border-radius:12px;padding:12px 16px;min-height:96px}
+.cap p{margin:0}.ct{font-size:15px;font-weight:500}.cx{font-size:13px;color:var(--text-secondary);margin-top:4px!important;line-height:1.6}
+.cn{fill:none;stroke:var(--b);stroke-width:0.5;stroke-dasharray:3 3}
+</style>
+<svg width="100%" viewBox="0 0 680 410" role="img" id="sv"><title>prime-rl components with async overlap</title><desc>Inference and trainer on GPUs and the orchestrator inside one Modal container, with agent sandboxes and a grader below. Version labels show which policy produced each batch.</desc>
+<rect x="30" y="20" width="620" height="205" rx="16" fill="none" stroke="var(--b)" stroke-width="0.5" stroke-dasharray="5 4"/>
+<text class="ts" x="50" y="40">Modal container, 2 × H100 + CPU</text>
+<text class="ts" id="badge" x="632" y="40" text-anchor="end" style="fill:var(--text-warning)"></text>
+<polyline class="cn" points="290,150 290,132 150,132 150,112"/>
+<polyline class="cn" points="390,150 390,132 530,132 530,112"/>
+<polyline class="cn" points="440,84 240,84"/>
+<polyline class="cn" points="92,290 92,250 392,250 392,290"/>
+<polyline class="cn" points="192,250 192,290"/><polyline class="cn" points="292,250 292,290"/>
+<polyline class="cn" points="340,250 340,206"/>
+<polyline class="cn" points="92,334 92,362 570,362 570,334"/>
+<polyline class="cn" points="192,334 192,362"/><polyline class="cn" points="292,334 292,362"/><polyline class="cn" points="392,334 392,362"/>
+<polyline class="cn" points="570,290 570,240 420,240 420,206"/>
+<g class="c-purple"><rect id="b-inf" x="60" y="56" width="180" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="150" y="76" text-anchor="middle" dominant-baseline="central">Inference (vLLM)</text>
+<text class="ts" id="isub" x="150" y="94" text-anchor="middle" dominant-baseline="central">serving policy v1</text></g>
+<g class="c-purple"><rect id="b-tr" x="440" y="56" width="180" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="530" y="76" text-anchor="middle" dominant-baseline="central">Trainer</text>
+<text class="ts" id="tsub" x="530" y="94" text-anchor="middle" dominant-baseline="central">weights v1, idle</text></g>
+<g class="c-teal"><rect id="b-or" x="230" y="150" width="220" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="340" y="170" text-anchor="middle" dominant-baseline="central">Orchestrator</text>
+<text class="ts" id="osub" x="340" y="188" text-anchor="middle" dominant-baseline="central">interception server</text></g>
+<g class="c-gray"><rect id="b-s0" x="50" y="290" width="84" height="44" rx="6" stroke-width="0.5"/><text class="ts" x="92" y="312" text-anchor="middle" dominant-baseline="central">attempt 1</text></g>
+<g class="c-gray"><rect id="b-s1" x="150" y="290" width="84" height="44" rx="6" stroke-width="0.5"/><text class="ts" x="192" y="312" text-anchor="middle" dominant-baseline="central">attempt 2</text></g>
+<g class="c-gray"><rect id="b-s2" x="250" y="290" width="84" height="44" rx="6" stroke-width="0.5"/><text class="ts" x="292" y="312" text-anchor="middle" dominant-baseline="central">attempt 3</text></g>
+<g class="c-gray"><rect id="b-s3" x="350" y="290" width="84" height="44" rx="6" stroke-width="0.5"/><text class="ts" x="392" y="312" text-anchor="middle" dominant-baseline="central">attempt 4</text></g>
+<g class="c-coral"><rect id="b-gr" x="500" y="290" width="140" height="44" rx="6" stroke-width="0.5"/><text class="th" x="570" y="312" text-anchor="middle" dominant-baseline="central">Grader sandbox</text></g>
+<text class="ts" id="r0" x="92" y="280" text-anchor="middle"></text><text class="ts" id="r1" x="192" y="280" text-anchor="middle"></text>
+<text class="ts" id="r2" x="292" y="280" text-anchor="middle"></text><text class="ts" id="r3" x="392" y="280" text-anchor="middle"></text>
+<text class="ts" id="sblab" x="50" y="392">Step 1 attempts, sampled from v1</text>
+<g id="pk"></g>
+</svg>
+<div class="ctl"><button id="pp" onclick="toggle()">Pause</button><button onclick="nextPh()">Next stage</button><button onclick="restart()">Restart</button>
+<span style="font-size:13px;color:var(--text-secondary);margin-left:auto">Amber stages = async overlap and staleness</span></div>
+<div class="ph" id="ph"></div>
+<div class="cap"><p class="ct" id="ct"></p><p class="cx" id="cx"></p></div>
+<script>
+const SX=[92,192,292,392];
+const C={req:"#1D9E75",tok:"#7F77DD",sol:"#888780",pass:"#639922",fail:"#E24B4A",bat:"#EF9F27",w:"#534AB7"};
+const up=i=>[[SX[i],290],[SX[i],250],[340,250],[340,206],[290,150],[290,132],[150,132],[150,112]];
+const down=i=>up(i).slice().reverse();
+const start=i=>[[340,206],[340,250],[SX[i],250],[SX[i],290]];
+const tog=i=>[[SX[i],334],[SX[i],362],[570,362],[570,334]];
+const gback=[[570,290],[570,240],[420,240],[420,206]];
+const totr=[[390,150],[390,132],[530,132],[530,112]];
+const wts=[[440,84],[240,84]];
+const R=[1,0,0,1],R2=[0,1,0,0];
+const all=f=>[0,1,2,3].map(f);
+const clr=()=>{for(let i=0;i<4;i++)set("r"+i,"")};
+const P=[
+{t:"1. Step 1 starts",x:"The orchestrator opens 4 sandboxes per task (32 attempts in a real step). vLLM serves policy v1, the untrained model.",d:2000,on:["b-or","b-s0","b-s1","b-s2","b-s3"],pk:all(i=>({p:start(i),c:C.req,dl:i*.08})),pre:()=>{clr();set("badge","");set("sblab","Step 1 attempts, sampled from v1");set("osub","interception server");set("tsub","weights v1, idle");set("isub","serving policy v1")}},
+{t:"2. Model calls go through the orchestrator",x:"Each agent's request goes sandbox → interception server → vLLM. vLLM answers with v1, and the orchestrator records every token and its probability, tagged with the version that produced it.",d:2600,on:["b-or","b-inf"],pk:all(i=>({p:up(i),c:C.req,dl:i*.06})).concat(all(i=>({p:down(i),c:C.tok,dl:.45+i*.05}))),pre:()=>set("osub","recording tokens, tagged v1")},
+{t:"3. Turns repeat, up to 30 per attempt",x:"Sandboxes run each tool call (write the kernel, run the check), then ask the model again. This is the slow part: minutes per attempt.",d:2600,on:["b-s0","b-s1","b-s2","b-s3","b-inf"],pk:all(i=>({p:up(i),c:C.req,dl:i*.12})).concat(all(i=>({p:down(i),c:C.tok,dl:.45+i*.08})))},
+{t:"4. Grade",x:"Each solution.py goes to a fresh grader. Rewards come back: attempts 1 and 4 pass.",d:2600,on:["b-gr","b-or"],pk:all(i=>({p:tog(i),c:C.sol,dl:i*.06})).concat(all(i=>({p:gback,c:R[i]?C.pass:C.fail,dl:.45+i*.08}))),post:()=>{for(let i=0;i<4;i++)set("r"+i,"reward "+R[i])}},
+{t:"5. Batch A to the trainer, and step 2 starts at once",as:1,x:"The orchestrator sends batch A (data from v1) to the trainer. It doesn't wait for training to finish: it immediately opens step 2's sandboxes, because vLLM would otherwise sit idle. This is the asynchronous part.",d:2600,on:["b-or","b-tr","b-s0","b-s1","b-s2","b-s3"],pk:[{p:totr,c:C.bat,dl:0,r:7}].concat(all(i=>({p:start(i),c:C.req,dl:.35+i*.06}))),pre:()=>set("osub","adv +0.5 −0.5 −0.5 +0.5"),post:()=>{clr();set("sblab","Step 2 attempts, sampled from v1 (v2 not ready yet)");set("tsub","training on batch A");set("osub","interception server")}},
+{t:"6. Overlap: training while sampling",as:1,x:"The trainer turns batch A into v2. Meanwhile step 2's agents keep calling vLLM, which still holds v1, so step 2's tokens are tagged v1. Both GPUs are busy at once. That's the point of async.",d:3200,on:["b-tr","b-inf","b-s0","b-s1","b-s2","b-s3"],pk:all(i=>({p:up(i),c:C.req,dl:i*.1})).concat(all(i=>({p:down(i),c:C.tok,dl:.45+i*.08}))),pre:()=>{set("badge","async: training v1 → v2 while vLLM samples v1");set("tsub","computing v1 → v2")}},
+{t:"7. v2 arrives at vLLM mid-rollout",as:1,x:"The trainer pushes the new adapter and vLLM switches to v2. Step 2's attempts are already partway done: their early turns came from v1. Turns from now on would come from v2.",d:2400,on:["b-tr","b-inf"],pk:[{p:wts,c:C.w,dl:0,r:8}],post:()=>{set("isub","serving policy v2");set("tsub","weights v2, waiting");set("badge","");set("sblab","Step 2 attempts: mostly v1 tokens, later turns v2")}},
+{t:"8. Step 2 finishes and is graded",x:"Same as before: solution.py to the grader, rewards back. This time only attempt 2 passes.",d:2600,on:["b-gr","b-or"],pk:all(i=>({p:tog(i),c:C.sol,dl:i*.06})).concat(all(i=>({p:gback,c:R2[i]?C.pass:C.fail,dl:.45+i*.08}))),post:()=>{for(let i=0;i<4;i++)set("r"+i,"reward "+R2[i])}},
+{t:"9. Batch B arrives one version stale",as:1,x:"The trainer now holds v2, but batch B was mostly sampled by v1: staleness = 2 − 1 = 1. With max_staleness = 1 it's kept. The ratio p_train ÷ p_vLLM corrects for the gap, and IPO drops tokens that drifted more than 0.3. A batch older than max_staleness would be discarded.",d:3000,on:["b-or","b-tr"],pk:[{p:totr,c:C.bat,dl:0,r:7}],pre:()=>{set("osub","adv −0.25 +0.75 −0.25 −0.25");set("badge","staleness 1 ≤ max_staleness 1: keep")},post:()=>set("tsub","batch B: v1 data, weights v2")}];
+const NS="http://www.w3.org/2000/svg";let ph=0,t0=null,play=!matchMedia("(prefers-reduced-motion: reduce)").matches,el=0,dots=[];
+function set(id,v){document.getElementById(id).textContent=v}
+function at(p,f){let L=[],T=0;for(let i=1;i<p.length;i++){const l=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);L.push(l);T+=l}let d=f*T;for(let i=0;i<L.length;i++){if(d<=L[i]){const k=L[i]?d/L[i]:0;return[p[i][0]+(p[i+1][0]-p[i][0])*k,p[i][1]+(p[i+1][1]-p[i][1])*k]}d-=L[i]}return p[p.length-1]}
+function hl(ids){document.querySelectorAll("#sv rect[id^=b-]").forEach(r=>r.style.strokeWidth=ids.includes(r.id)?"2":"0.5")}
+function enter(){const s=P[ph];if(s.pre)s.pre();set("ct",s.t);set("cx",s.x);hl(s.on);
+const g=document.getElementById("pk");g.innerHTML="";dots=s.pk.map(k=>{const c=document.createElementNS(NS,"circle");c.setAttribute("r",k.r||5);c.setAttribute("fill",k.c);c.setAttribute("opacity",0);g.appendChild(c);return{c,k}});
+document.getElementById("ph").innerHTML=P.map((q,i)=>`<button class="pd ${q.as?"as":""} ${i===ph?"on":""}" onclick="jump(${i})">${i+1}</button>`).join("");el=0;t0=null}
+function leave(){const s=P[ph];if(s.post)s.post()}
+function frame(ts){if(play){if(t0===null)t0=ts-el;el=ts-t0;const s=P[ph],f=Math.min(el/s.d,1);
+dots.forEach(({c,k})=>{const span=Math.max(.5,1-k.dl);const q=Math.min(Math.max((f-k.dl)/span,0),1);const[x,y]=at(k.p,q);c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("opacity",q>0&&q<1?1:0)});
+if(f>=1){leave();ph=(ph+1)%P.length;enter()}}else{t0=null}requestAnimationFrame(frame)}
+function toggle(){play=!play;set("pp",play?"Pause":"Play")}
+function nextPh(){leave();ph=(ph+1)%P.length;enter();play=false;set("pp","Play")}
+function jump(i){ph=i;enter();play=false;set("pp","Play")}
+function restart(){ph=0;enter();play=true;set("pp","Pause")}
+set("pp",play?"Pause":"Play");enter();requestAnimationFrame(frame);
+</script>
+</main></body></html>

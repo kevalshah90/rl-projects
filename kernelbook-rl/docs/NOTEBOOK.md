@@ -327,6 +327,9 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 
 ## 6. Ideas for the report / paper
 
+- Figures: [`visuals/`](visuals/README.md) has the animated prime-rl loop (async + staleness) and the
+  trainer-step zoom (ratio, IPO mask, loss, LoRA backward, AdamW, adapter sync). Self-contained HTML.
+
 - Infra lessons for agentic RL: untimed sandbox creation, laptop-hosted interception as SPOF,
   spend limits, log lines that report reward before grading.
 - pass@1 vs pass@4 gap (21.8% vs 45.5%): RL as reliability vs new capability; track both.

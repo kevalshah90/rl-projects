@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trainer step zoom</title><meta name="description" content="Animated zoom into one prime-rl trainer step: importance ratio and IPO mask, loss, LoRA-only backward pass, AdamW, adapter sync to vLLM.">
+<!-- KernelBook RL notebook visual. Self-contained: open in a browser (no build, no network). -->
+<style>
+:root{--text-primary:#1f1e1d;--text-secondary:#5f5e5a;--text-muted:#888780;--text-accent:#185FA5;--text-warning:#854F0B;--surface-0:#f5f4ef;--surface-1:#f1efe8;--surface-2:#ffffff;--bg-accent:#E6F1FB;--border:rgba(31,30,29,.15);--border-strong:rgba(31,30,29,.3);--border-accent:#85B7EB;--border-warning:#EF9F27;--radius:8px;--b:#888780;--t:#5f5e5a;--p:#1f1e1d;--s:#5f5e5a;--bg2:#f1efe8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--text-primary:#ecebe6;--text-secondary:#c2c0b6;--text-muted:#9c9a92;--text-accent:#85B7EB;--text-warning:#FAC775;--surface-0:#1f1e1d;--surface-1:#2a2927;--surface-2:#262624;--bg-accent:#0C447C;--border:rgba(236,235,230,.15);--border-strong:rgba(236,235,230,.3);--border-accent:#378ADD;--border-warning:#BA7517;--b:#9c9a92;--t:#c2c0b6;--p:#ecebe6;--s:#c2c0b6;--bg2:#2a2927;color-scheme:dark}}
+:root[data-theme="dark"]{--text-primary:#ecebe6;--text-secondary:#c2c0b6;--text-muted:#9c9a92;--text-accent:#85B7EB;--text-warning:#FAC775;--surface-0:#1f1e1d;--surface-1:#2a2927;--surface-2:#262624;--bg-accent:#0C447C;--border:rgba(236,235,230,.15);--border-strong:rgba(236,235,230,.3);--border-accent:#378ADD;--border-warning:#BA7517;--b:#9c9a92;--t:#c2c0b6;--p:#ecebe6;--s:#c2c0b6;--bg2:#2a2927;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px;background:var(--surface-0);color:var(--text-primary);font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;background:var(--surface-2);border:0.5px solid var(--border);border-radius:12px;padding:16px 20px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+svg text{font-family:inherit}
+.t{font-size:14px;fill:var(--text-primary)}.ts{font-size:12px;fill:var(--text-secondary)}.th{font-size:14px;font-weight:500;fill:var(--text-primary)}
+.box{fill:var(--surface-1);stroke:var(--border-strong)}
+.arr{stroke:var(--t);stroke-width:1.5;fill:none}.leader{stroke:var(--t);stroke-width:.5;stroke-dasharray:3 3;fill:none}
+button{font:inherit;font-size:13px;padding:6px 12px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:transparent;color:var(--text-primary);cursor:pointer}
+button:hover{background:var(--surface-1)}button:active{transform:scale(.98)}
+.c-purple>rect,.c-purple>circle,.c-purple>ellipse,.c-purple>polygon,rect.c-purple,circle.c-purple,ellipse.c-purple{fill:#EEEDFE;stroke:#534AB7}.c-purple>.th,.c-purple>.t{fill:#3C3489}.c-purple>.ts{fill:#534AB7}
+.c-teal>rect,.c-teal>circle,.c-teal>ellipse,.c-teal>polygon,rect.c-teal,circle.c-teal,ellipse.c-teal{fill:#E1F5EE;stroke:#0F6E56}.c-teal>.th,.c-teal>.t{fill:#085041}.c-teal>.ts{fill:#0F6E56}
+.c-coral>rect,.c-coral>circle,.c-coral>ellipse,.c-coral>polygon,rect.c-coral,circle.c-coral,ellipse.c-coral{fill:#FAECE7;stroke:#993C1D}.c-coral>.th,.c-coral>.t{fill:#712B13}.c-coral>.ts{fill:#993C1D}
+.c-pink>rect,.c-pink>circle,.c-pink>ellipse,.c-pink>polygon,rect.c-pink,circle.c-pink,ellipse.c-pink{fill:#FBEAF0;stroke:#993556}.c-pink>.th,.c-pink>.t{fill:#72243E}.c-pink>.ts{fill:#993556}
+.c-gray>rect,.c-gray>circle,.c-gray>ellipse,.c-gray>polygon,rect.c-gray,circle.c-gray,ellipse.c-gray{fill:#F1EFE8;stroke:#5F5E5A}.c-gray>.th,.c-gray>.t{fill:#444441}.c-gray>.ts{fill:#5F5E5A}
+.c-blue>rect,.c-blue>circle,.c-blue>ellipse,.c-blue>polygon,rect.c-blue,circle.c-blue,ellipse.c-blue{fill:#E6F1FB;stroke:#185FA5}.c-blue>.th,.c-blue>.t{fill:#0C447C}.c-blue>.ts{fill:#185FA5}
+.c-green>rect,.c-green>circle,.c-green>ellipse,.c-green>polygon,rect.c-green,circle.c-green,ellipse.c-green{fill:#EAF3DE;stroke:#3B6D11}.c-green>.th,.c-green>.t{fill:#27500A}.c-green>.ts{fill:#3B6D11}
+.c-amber>rect,.c-amber>circle,.c-amber>ellipse,.c-amber>polygon,rect.c-amber,circle.c-amber,ellipse.c-amber{fill:#FAEEDA;stroke:#854F0B}.c-amber>.th,.c-amber>.t{fill:#633806}.c-amber>.ts{fill:#854F0B}
+.c-red>rect,.c-red>circle,.c-red>ellipse,.c-red>polygon,rect.c-red,circle.c-red,ellipse.c-red{fill:#FCEBEB;stroke:#A32D2D}.c-red>.th,.c-red>.t{fill:#791F1F}.c-red>.ts{fill:#A32D2D}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) body{}}
+</style>
+<style media="(prefers-color-scheme: dark)">
+.c-purple>rect,.c-purple>circle,.c-purple>ellipse,.c-purple>polygon,rect.c-purple,circle.c-purple,ellipse.c-purple{fill:#3C3489;stroke:#AFA9EC}.c-purple>.th,.c-purple>.t{fill:#CECBF6}.c-purple>.ts{fill:#AFA9EC}
+.c-teal>rect,.c-teal>circle,.c-teal>ellipse,.c-teal>polygon,rect.c-teal,circle.c-teal,ellipse.c-teal{fill:#085041;stroke:#5DCAA5}.c-teal>.th,.c-teal>.t{fill:#9FE1CB}.c-teal>.ts{fill:#5DCAA5}
+.c-coral>rect,.c-coral>circle,.c-coral>ellipse,.c-coral>polygon,rect.c-coral,circle.c-coral,ellipse.c-coral{fill:#712B13;stroke:#F0997B}.c-coral>.th,.c-coral>.t{fill:#F5C4B3}.c-coral>.ts{fill:#F0997B}
+.c-pink>rect,.c-pink>circle,.c-pink>ellipse,.c-pink>polygon,rect.c-pink,circle.c-pink,ellipse.c-pink{fill:#72243E;stroke:#ED93B1}.c-pink>.th,.c-pink>.t{fill:#F4C0D1}.c-pink>.ts{fill:#ED93B1}
+.c-gray>rect,.c-gray>circle,.c-gray>ellipse,.c-gray>polygon,rect.c-gray,circle.c-gray,ellipse.c-gray{fill:#444441;stroke:#B4B2A9}.c-gray>.th,.c-gray>.t{fill:#D3D1C7}.c-gray>.ts{fill:#B4B2A9}
+.c-blue>rect,.c-blue>circle,.c-blue>ellipse,.c-blue>polygon,rect.c-blue,circle.c-blue,ellipse.c-blue{fill:#0C447C;stroke:#85B7EB}.c-blue>.th,.c-blue>.t{fill:#B5D4F4}.c-blue>.ts{fill:#85B7EB}
+.c-green>rect,.c-green>circle,.c-green>ellipse,.c-green>polygon,rect.c-green,circle.c-green,ellipse.c-green{fill:#27500A;stroke:#97C459}.c-green>.th,.c-green>.t{fill:#C0DD97}.c-green>.ts{fill:#97C459}
+.c-amber>rect,.c-amber>circle,.c-amber>ellipse,.c-amber>polygon,rect.c-amber,circle.c-amber,ellipse.c-amber{fill:#633806;stroke:#EF9F27}.c-amber>.th,.c-amber>.t{fill:#FAC775}.c-amber>.ts{fill:#EF9F27}
+.c-red>rect,.c-red>circle,.c-red>ellipse,.c-red>polygon,rect.c-red,circle.c-red,ellipse.c-red{fill:#791F1F;stroke:#F09595}.c-red>.th,.c-red>.t{fill:#F7C1C1}.c-red>.ts{fill:#F09595}
+</style>
+</head><body><main>
+<h2 class="sr-only">Animated zoom into the trainer: batch tokens go through a forward pass, are compared with vLLM probabilities, become a loss, gradients flow back into the LoRA adapters only, AdamW updates them, and the adapter is sent to vLLM.</h2>
+<style>
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.ph{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0 10px}
+.pd{font-size:11px;padding:3px 8px;border-radius:var(--radius);border:0.5px solid var(--border);color:var(--text-secondary);cursor:pointer;background:transparent}
+.pd.on{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}
+.cap{background:var(--surface-1);border-radius:12px;padding:12px 16px;min-height:100px}
+.cap p{margin:0}.ct{font-size:15px;font-weight:500}.cx{font-size:13px;color:var(--text-secondary);margin-top:4px!important;line-height:1.6}
+.ar{fill:none;stroke:var(--b);stroke-width:0.8}
+</style>
+<svg width="100%" viewBox="0 0 680 375" role="img" id="sv"><title>Inside the trainer</title><desc>Token chips at the top feed a stack of frozen layers with LoRA adapters; outputs go to a ratio and mask box, then a loss box; gradients flow back to the LoRA adapters; AdamW updates them; the adapter is saved and sent to vLLM.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="ts" x="39" y="22">Batch A, attempt 1 (passed): advantage +0.5. Every attempt in the batch goes through the same steps.</text>
+<g id="chips"></g>
+<rect x="40" y="100" width="470" height="258" rx="14" fill="none" stroke="var(--b)" stroke-width="0.5" stroke-dasharray="5 4"/>
+<text class="th" x="56" y="120">Trainer (GPU 1)</text>
+<g id="stack"></g>
+<line class="ar" x1="163" y1="84" x2="163" y2="128" marker-end="url(#arrow)"/>
+<line class="ar" x1="268" y1="152" x2="318" y2="152" marker-end="url(#arrow)"/>
+<line class="ar" x1="405" y1="178" x2="405" y2="203" marker-end="url(#arrow)"/>
+<path d="M318 229 L270 229" fill="none" stroke="#7F77DD" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<line class="ar" x1="163" y1="265" x2="163" y2="298" marker-end="url(#arrow)"/>
+<line class="ar" x1="268" y1="322" x2="318" y2="322" marker-end="url(#arrow)"/>
+<line class="ar" x1="490" y1="322" x2="518" y2="322" marker-end="url(#arrow)"/>
+<g class="c-teal"><rect id="b-ra" x="320" y="130" width="170" height="48" rx="8" stroke-width="0.5"/>
+<text class="th" x="405" y="146" text-anchor="middle" dominant-baseline="central">Ratio + IPO mask</text>
+<text class="ts" x="405" y="164" text-anchor="middle" dominant-baseline="central">p_train ÷ p_vLLM</text></g>
+<g class="c-teal"><rect id="b-lo" x="320" y="205" width="170" height="48" rx="8" stroke-width="0.5"/>
+<text class="th" x="405" y="221" text-anchor="middle" dominant-baseline="central">Loss</text>
+<text class="ts" id="lossv" x="405" y="239" text-anchor="middle" dominant-baseline="central">mean(−A × ratio)</text></g>
+<g class="c-coral"><rect id="b-ad" x="60" y="300" width="208" height="44" rx="8" stroke-width="0.5"/>
+<text class="th" x="164" y="314" text-anchor="middle" dominant-baseline="central">AdamW step</text>
+<text class="ts" x="164" y="331" text-anchor="middle" dominant-baseline="central">LoRA numbers only</text></g>
+<g class="c-coral"><rect id="b-sv" x="320" y="300" width="170" height="44" rx="8" stroke-width="0.5"/>
+<text class="th" x="405" y="314" text-anchor="middle" dominant-baseline="central">Save adapter</text>
+<text class="ts" x="405" y="331" text-anchor="middle" dominant-baseline="central">tens of MB</text></g>
+<g class="c-purple"><rect id="b-vl" x="520" y="300" width="120" height="44" rx="8" stroke-width="0.5"/>
+<text class="th" x="580" y="314" text-anchor="middle" dominant-baseline="central">vLLM</text>
+<text class="ts" id="vv" x="580" y="331" text-anchor="middle" dominant-baseline="central">policy v1</text></g>
+<g id="pk"></g>
+</svg>
+<div class="ctl"><button id="pp" onclick="toggle()">Pause</button><button onclick="nextPh()">Next stage</button><button onclick="restart()">Restart</button></div>
+<div class="ph" id="ph"></div>
+<div class="cap"><p class="ct" id="ct"></p><p class="cx" id="cx"></p></div>
+<script>
+const NS="http://www.w3.org/2000/svg";
+const T=[{w:"<prompt>",m:1},{w:"I'll",pv:.62,pt:.62},{w:"tl.load",pv:.40,pt:.41},{w:"<tool out>",m:1},{w:"mask=",pv:.30,pt:.30},{w:"tl.store",pv:.70,pt:.30,dr:1}];
+const CX=i=>39+i*102;
+(function(){const g=document.getElementById("chips");T.forEach((t,i)=>{const x=CX(i);const gg=document.createElementNS(NS,"g");gg.setAttribute("class",t.m?"c-gray":"c-teal");gg.setAttribute("id","ch"+i);
+gg.innerHTML=`<rect x="${x}" y="32" width="92" height="50" rx="6" stroke-width="0.5"/><text class="th" x="${x+46}" y="49" text-anchor="middle" dominant-baseline="central">${t.w.replace("<","&lt;").replace(">","&gt;")}</text><text class="ts" id="v${i}" x="${x+46}" y="67" text-anchor="middle" dominant-baseline="central"></text>`;g.appendChild(gg)});
+const s=document.getElementById("stack");[0,1,2,3].forEach(k=>{const y=130+k*34;
+s.innerHTML+=`<g class="c-gray"><rect id="base${k}" x="60" y="${y}" width="172" height="28" rx="4" stroke-width="0.5"/><text class="ts" x="146" y="${y+14}" text-anchor="middle" dominant-baseline="central">layer ${k===3?"N":k+1} (frozen)</text></g><g class="c-purple"><rect id="lora${k}" x="236" y="${y}" width="32" height="28" rx="4" stroke-width="0.5"/><text class="ts" x="252" y="${y+14}" text-anchor="middle" dominant-baseline="central">LoRA</text></g>`})})();
+const fmt=x=>x.toFixed(2);
+const V={
+pv:i=>T[i].m?"masked: tool":"p_vLLM "+fmt(T[i].pv),
+pt:i=>T[i].m?"masked: tool":"p_train "+fmt(T[i].pt),
+ra:i=>T[i].m?"masked: tool":T[i].dr?"IPO: dropped":"ratio "+fmt(T[i].pt/T[i].pv),
+lo:i=>T[i].m||T[i].dr?"no loss":"loss "+fmt(-0.5*T[i].pt/T[i].pv)};
+function vals(k){T.forEach((t,i)=>{document.getElementById("v"+i).textContent=V[k](i);document.getElementById("ch"+i).style.opacity=(t.m||(t.dr&&(k==="ra"||k==="lo")))?.45:1})}
+const lanes=[100,140,180];
+const P=[
+{t:"1. Batch arrives",x:"Each attempt arrives as one long token sequence with: the token IDs, a mask (tool output and prompt are masked, since the model didn't write them), vLLM's probability for each token when it was sampled, and one advantage for the whole attempt, here +0.5.",d:2400,v:"pv",on:[],pk:[1,2,4,5].map((i,n)=>({p:[[CX(i)+46,84],[163,128]],c:"#1D9E75",dl:n*.1}))},
+{t:"2. Forward pass",x:"The trainer runs the same tokens through its own copy of the model: frozen base layers plus the current LoRA adapters. Nothing is generated. For each token it reads off how likely its current weights find that token: p_train.",d:2800,v:"pt",on:["base0","base1","base2","base3","lora0","lora1","lora2","lora3"],pk:lanes.map((x,n)=>({p:[[x,130],[x,262]],c:"#1D9E75",dl:n*.12})).concat([{p:[[268,152],[318,152]],c:"#1D9E75",dl:.6}])},
+{t:"3. Ratio and IPO mask",x:"For each model-written token, ratio = p_train ÷ p_vLLM. Values near 1 mean the trainer and vLLM agree. tl.store shows staleness gone too far: vLLM gave it 0.70, the trainer now gives 0.30. That's a difference over 0.3, so IPO drops the token rather than trust a wild ratio.",d:2600,v:"ra",on:["b-ra"],pk:[]},
+{t:"4. Loss",x:"Each kept token's loss = −advantage × ratio, about −0.50 here. Losses from all kept tokens of all 32 attempts are averaged into one number. Lowering it means raising the probability of tokens from passing attempts and lowering it for failing ones.",d:2600,v:"lo",on:["b-lo"],pk:[{p:[[405,178],[405,203]],c:"#EF9F27",dl:0,r:6}],post:()=>set("lossv","batch loss −0.17")},
+{t:"5. Backward pass",x:"Backpropagation sends the loss's gradient back through every layer. The base weights are frozen, so no gradient is kept for them. Only the LoRA adapters (about 30M numbers) get gradients. Their directions add up across every kept token in the batch.",d:3000,v:"lo",on:["lora0","lora1","lora2","lora3"],pk:[{p:[[318,229],[270,229]],c:"#7F77DD",dl:0,r:6}].concat([0,1,2,3].map(k=>({p:[[252,262-k*0],[252,130]],c:"#7F77DD",dl:.25+k*.1})))},
+{t:"6. AdamW step",x:"AdamW moves each LoRA number a tiny step against its gradient, scaled by running averages of the gradient's direction and size, with a small learning rate. After this, p(tl.load) in that context is a bit higher: 0.41 → about 0.42 next time.",d:2400,v:"lo",on:["b-ad","lora0","lora1","lora2","lora3"],pk:[{p:[[163,265],[163,298]],c:"#D85A30",dl:0,r:6}]},
+{t:"7. Save adapter, send to vLLM",x:"Only the adapter is written, tens of MB rather than 18 GB. vLLM loads it, and new requests are answered by v2. That's the v2 arriving mid-rollout in the first animation.",d:2600,v:"lo",on:["b-sv","b-vl"],pk:[{p:[[268,322],[318,322],[490,322],[518,322]],c:"#534AB7",dl:0,r:7}],post:()=>{ver++;set("vv","policy v"+ver)}}];
+let ph=0,t0=null,play=!matchMedia("(prefers-reduced-motion: reduce)").matches,el=0,dots=[],ver=1;
+function set(id,v){document.getElementById(id).textContent=v}
+function at(p,f){let L=[],Tt=0;for(let i=1;i<p.length;i++){const l=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);L.push(l);Tt+=l}let d=f*Tt;for(let i=0;i<L.length;i++){if(d<=L[i]){const k=L[i]?d/L[i]:0;return[p[i][0]+(p[i+1][0]-p[i][0])*k,p[i][1]+(p[i+1][1]-p[i][1])*k]}d-=L[i]}return p[p.length-1]}
+function hl(ids){document.querySelectorAll("#sv rect[id]").forEach(r=>r.style.strokeWidth=ids.includes(r.id)?"2":"0.5")}
+function enter(){const s=P[ph];if(ph===0)set("lossv","mean(−A × ratio)");if(s.pre)s.pre();vals(s.v);set("ct",s.t);set("cx",s.x);hl(s.on);
+const g=document.getElementById("pk");g.innerHTML="";dots=s.pk.map(k=>{const c=document.createElementNS(NS,"circle");c.setAttribute("r",k.r||5);c.setAttribute("fill",k.c);c.setAttribute("opacity",0);g.appendChild(c);return{c,k}});
+document.getElementById("ph").innerHTML=P.map((q,i)=>`<button class="pd ${i===ph?"on":""}" onclick="jump(${i})">${i+1}</button>`).join("");el=0;t0=null}
+function leave(){const s=P[ph];if(s.post)s.post()}
+function frame(ts){if(play){if(t0===null)t0=ts-el;el=ts-t0;const s=P[ph],f=Math.min(el/s.d,1);
+dots.forEach(({c,k})=>{const span=Math.max(.5,1-k.dl);const q=Math.min(Math.max((f-k.dl)/span,0),1);const[x,y]=at(k.p,q);c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("opacity",q>0&&q<1?1:0)});
+if(f>=1){leave();ph=(ph+1)%P.length;enter()}}else{t0=null}requestAnimationFrame(frame)}
+function toggle(){play=!play;set("pp",play?"Pause":"Play")}
+function nextPh(){leave();ph=(ph+1)%P.length;enter();play=false;set("pp","Play")}
+function jump(i){ph=i;enter();play=false;set("pp","Play")}
+function restart(){ph=0;ver=1;set("vv","policy v1");enter();play=true;set("pp","Pause")}
+set("pp",play?"Pause":"Play");enter();requestAnimationFrame(frame);
+</script>
+</main></body></html>
