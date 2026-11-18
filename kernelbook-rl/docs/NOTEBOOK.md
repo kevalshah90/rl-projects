@@ -586,6 +586,34 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   (interception -> renderer -> /inference/v1/generate) builds or reports context. To diagnose
   before the real run (comparability with E0).
 
+### 2026-11-18: restarted smoke run stopped; runs made resumable (s11 `rl_run`, `[ckpt]`)
+- Stopped `ap-FhzJfqylaHFm2eGpOJgeyF` (the post-preemption restart, back at step 0): it would only
+  re-prove steps 1-2 at 2 H100s for ~2 h.
+- prime-rl 389eacb resume, read from source:
+  - `[ckpt] interval` saves `checkpoints/step_N/{trainer,orchestrator}`.
+    - Trainer: DCP of model (full state dict, so frozen base weights too) + optimizer + scheduler +
+      progress.
+    - Orchestrator: `progress.pt` (step, data position, live config).
+  - `--resume` picks the highest `step_*` dir. With none it warns and starts fresh, so passing it
+    always is safe. With `--resume` set, the "run dir already used" guard is skipped.
+  - On resume the trainer's startup broadcast is v{N}, so vLLM gets the step-N adapter; old
+    rollouts/broadcasts past N are cleaned. Only `checkpoints/` must survive.
+  - No completion marker: a half-written `step_N` (preemption mid-save) would be picked.
+- s11 `smoke_run` -> `rl_run(config, run_name)`:
+  - fixed `--run.name` (default from the config file name, e.g. `rl-smoke`); it is the resume key;
+  - run dir stays on local disk `/tmp/rl/<name>` (vLLM reads broadcasts from it);
+  - the minute mirror to `/runs/rl/<name>` also copies each *complete* checkpoint (trainer
+    `.metadata`, written last by DCP, + orchestrator `progress.pt`) as `step_N.partial`, then
+    renames; newest 2 kept on the Volume;
+  - at start: if the Volume holds a complete checkpoint, copy it back and add `--resume`. Covers
+    a preemption restart (same input = same name) and a manual relaunch after the 24 h timeout.
+  - Episodes in flight at the cut are lost (re-sampled after resume).
+- `rl_smoke.toml`: `[ckpt] interval = 2, keep_last = 2`. Dry run with `--run.name dry --resume` passes:
+  trainer ckpt `interval 2 / keep_last 2`, orchestrator `interval 2`, "No checkpoints found ...
+  Starting from scratch".
+- Not yet exercised on GPU: checkpoint size/copy time (expect ~18 GB if bf16; more if the DCP state
+  is fp32) and an actual resume. Test: run to the step-2 checkpoint, stop the app, relaunch same name.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -605,6 +633,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Patch renderers' Qwen3.5 tool-arg `.strip()` in our image | Keeps tool arguments byte-identical to vLLM's qwen3_coder parser (baseline/E0); otherwise training-time edits lose indentation |
 | LoRA also on the linear-attention projections (`in_proj_qkv`, `in_proj_z`, `out_proj`) | Default targets leave attention in 24 of 32 layers frozen; +11M params (40.1M), trainer fits at 32K. Fallback to default if vLLM can't load LoRA on those modules |
 | Add `prime-kernels` + `flash_attn_3` (lockfile-pinned wheels) to the lean image | The trainer needs both on H100; same versions upstream's Dockerfile installs |
+| Resumable runs: fixed run name, checkpoints copied to the Volume only when complete, auto `--resume` | Modal preempts GPU containers and restarts from scratch (smoke attempt 3 lost 2 steps); prime-rl has no completion marker, so partial checkpoints must never be visible |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up

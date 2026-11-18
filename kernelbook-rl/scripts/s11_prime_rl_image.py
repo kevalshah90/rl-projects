@@ -375,38 +375,90 @@ def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
     cfg = resolve_rl_config(config, "https://dry-run.invalid")   # no tunnel needed to validate
     out = Path("/runs/checks/rl_smoke_dry")
     shutil.rmtree(out, ignore_errors=True)
-    cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out), *NO_PRIME]
+    # the same flags rl_run passes on a restart (--resume with no checkpoint = start fresh)
+    cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out), "--run.name", "dry",
+           "--resume", *NO_PRIME]
     print("$", " ".join(cmd), flush=True)
     code = subprocess.run(cmd, cwd=KB).returncode
     print(f"-> exit {code}", flush=True)
     for f in sorted(out.rglob("resolved/*.json")):
         c = json.loads(f.read_text())
-        print(f"{f.name}: monitors={c.get('monitors')} lr={c.get('optim', {}).get('lr')}", flush=True)
+        print(f"{f.name}: monitors={c.get('monitors')} lr={c.get('optim', {}).get('lr')} "
+              f"ckpt={c.get('ckpt')} resume={c.get('resume')}", flush=True)
     runs.commit()
+
+
+def ckpt_complete(step_dir: Path) -> bool:
+    """A step checkpoint is usable only when both halves are fully written: the trainer's DCP
+    `.metadata` is written last (after every shard), the orchestrator's progress.pt by atomic
+    rename. prime-rl itself has no completion marker, and `--resume` picks the highest step_*
+    dir, so a half-written one (preemption mid-save) must never reach the Volume."""
+    return (step_dir / "trainer" / ".metadata").exists() and (step_dir / "orchestrator" / "progress.pt").exists()
+
+
+def ckpt_steps(ckpt_dir: Path) -> list[int]:
+    return sorted(int(d.name.removeprefix("step_")) for d in ckpt_dir.glob("step_*")
+                  if d.name.removeprefix("step_").isdigit() and ckpt_complete(d))
 
 
 @app.function(
     gpu="H100:2",                       # 1 vLLM + 1 trainer (deployment in the config)
     cpu=16, memory=131072,
-    timeout=6 * 60 * 60,                # 5 steps x ~20-30 min (~9 episodes, 4 in flight: 10-GPU cap) + startup
+    timeout=24 * 60 * 60,               # Modal's max; a run past this is relaunched with the same name
     volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
 )
-def smoke_run(config: str = "configs/rl_smoke.toml", args: str = "") -> None:
-    """The smoke run: `rl` (trainer + vLLM + orchestrator + env worker) on one 2-H100 container.
+def rl_run(config: str, run_name: str, args: str = "") -> None:
+    """An RL run: `rl` (trainer + vLLM + orchestrator + env worker) on one 2-H100 container.
     Sandboxes reach the env worker's interception server through modal.forward (as check 2).
-    The run dir stays on local disk (weight broadcasts are read by vLLM from there); logs,
-    configs and metrics are mirrored to the Volume (rl_smoke/) every minute, weights excluded."""
+
+    Resumable. The run dir (/tmp/rl/<run_name>) stays on local disk: vLLM reads weight
+    broadcasts from it, and the Volume is too slow for that. Every minute a thread mirrors it to
+    /runs/rl/<run_name>: logs, configs, metrics, and each COMPLETE checkpoint (copied as
+    step_N.partial, then renamed; only the newest 2 kept). When the container starts and the
+    Volume holds a checkpoint, it is copied back and `rl --resume` continues from it: the trainer
+    reloads LoRA + optimizer + scheduler, the orchestrator its progress and data position, and
+    the trainer's startup broadcast puts that step's adapter on vLLM. This covers both a
+    preemption (Modal reruns this function with the same input) and a manual relaunch with the
+    same --run-name (e.g. after the 24 h timeout). Episodes in flight at the cut are lost."""
     import shutil
     import subprocess
     import threading
+    import time
 
-    local = Path("/tmp/rl_smoke")
-    mirror = Path("/runs/rl_smoke")
+    out = Path("/tmp/rl")
+    local = out / run_name
+    mirror = Path("/runs/rl") / run_name
     skip = shutil.ignore_patterns("broadcasts", "weights", "checkpoints", "*.safetensors", "*.bin", "*.pt")
+
+    resume = []
+    runs.reload()
+    saved = ckpt_steps(mirror / "checkpoints")
+    if saved:
+        step = saved[-1]
+        print(f"resuming {run_name} from Volume checkpoint step_{step}", flush=True)
+        shutil.copytree(mirror / "checkpoints" / f"step_{step}", local / "checkpoints" / f"step_{step}")
+        resume = ["--resume"]
+    elif mirror.exists():
+        print(f"{mirror} exists but holds no complete checkpoint: starting {run_name} from scratch",
+              flush=True)
+
+    def sync_ckpts() -> None:
+        src, dst = local / "checkpoints", mirror / "checkpoints"
+        new = [n for n in ckpt_steps(src) if not (dst / f"step_{n}").exists()]
+        for n in new[-1:]:                       # only the newest; older ones are superseded
+            tmp = dst / f"step_{n}.partial"
+            shutil.rmtree(tmp, ignore_errors=True)
+            t0 = time.time()
+            shutil.copytree(src / f"step_{n}", tmp)
+            tmp.rename(dst / f"step_{n}")
+            print(f"checkpoint step_{n} -> Volume in {time.time() - t0:.0f}s", flush=True)
+        for n in ckpt_steps(dst)[:-2]:           # keep the newest 2 on the Volume
+            shutil.rmtree(dst / f"step_{n}", ignore_errors=True)
 
     def sync() -> None:
         if local.exists():
             shutil.copytree(local, mirror, dirs_exist_ok=True, ignore=skip)
+            sync_ckpts()
             runs.commit()
 
     stop = threading.Event()
@@ -422,7 +474,8 @@ def smoke_run(config: str = "configs/rl_smoke.toml", args: str = "") -> None:
     subprocess.run("nvidia-smi --query-gpu=name,memory.used --format=csv", shell=True)
     with modal.forward(PORT) as tunnel:
         cfg = resolve_rl_config(config, tunnel.url)
-        cmd = ["rl", "@", str(cfg), "--output-dir", str(local), *NO_PRIME, *args.split()]
+        cmd = ["rl", "@", str(cfg), "--output-dir", str(out), "--run.name", run_name,
+               *resume, *NO_PRIME, *args.split()]
         print("interception server reachable at", tunnel.url, flush=True)
         print("$", " ".join(cmd), flush=True)
         code = subprocess.run(cmd, cwd=KB).returncode
@@ -433,16 +486,20 @@ def smoke_run(config: str = "configs/rl_smoke.toml", args: str = "") -> None:
 
 
 @app.local_entrypoint()
-def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
-    if which == "smoke":
+def main(which: str = "image", dry_run: bool = False, args: str = "",
+         config: str = "configs/rl_smoke.toml", run_name: str = "") -> None:
+    if which in ("smoke", "rl"):
         if dry_run:
             smoke_dry_run.remote()
-        else:
-            # spawn, not remote: a .remote() call stays tied to this local client, and when the
-            # client goes away (Mac sleep, expired token) Modal cancels the input, which killed
-            # smoke attempt 2 at 08:22. A spawned call runs to completion in the detached app.
-            call = smoke_run.spawn(args=args)
-            print(f"spawned smoke_run: function call {call.object_id}", flush=True)
+            return
+        # The run name is the resume key: relaunching with the same name continues from its
+        # newest checkpoint on the Volume (/runs/rl/<name>); a new name starts fresh.
+        name = run_name or Path(config).stem.replace("_", "-")
+        # spawn, not remote: a .remote() call stays tied to this local client, and when the
+        # client goes away (Mac sleep, expired token) Modal cancels the input, which killed
+        # smoke attempt 2 at 08:22. A spawned call runs to completion in the detached app.
+        call = rl_run.spawn(config=config, run_name=name, args=args)
+        print(f"spawned rl_run {name} ({config}): function call {call.object_id}", flush=True)
         return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)

@@ -27,7 +27,7 @@ decisions: [`docs/NOTEBOOK.md`](docs/NOTEBOOK.md) · figures: [`docs/visuals/`](
    │
    ▼
  MODAL ─────────────────────────────────────────────────────────────────────────────────────────
- ┌─ rl container: s11 smoke_run (2× H100) ───────────────┐    ┌─ sandboxes (our runtime plugin, ─┐
+ ┌─ rl container: s11 rl_run (2× H100) ──────────────────┐    ┌─ sandboxes (our runtime plugin, ─┐
  │  prime-rl `rl` launcher                               │    │   modal_runtime.py)              │
  │   orchestrator  samples registry-trainable (138),     │    │                                  │
  │                 groups of 4, advantages, batches      │    │  agent sandbox  (A10G, 1/episode)│

@@ -1,13 +1,22 @@
 # Training-loop smoke test: prime-rl `rl` launcher, Qwen3.5-9B + LoRA, one node with 2 H100s
 # (1 vLLM + 1 trainer), on the 138 trainable tasks (registry-trainable.json, s14).
 # Launch (s11 rewrites the Mac registry path and fills in the tunnel URL, see `rl_smoke`):
-#   uv run modal run --detach scripts/s11_prime_rl_image.py --which smoke [--dry-run]
+#   uv run modal run --detach scripts/s11_prime_rl_image.py --which smoke [--dry-run] [--run-name NAME]
+# The run name (default rl-smoke) is the resume key: a relaunch or a preemption restart with the
+# same name continues from the newest checkpoint on the Volume (s11 rl_run).
 # Agent settings match baseline / E0 / check 2: bash harness, 30 turns, T = 1, 8192 tokens per
 # turn, 32K context, our Modal runtime plugin (A10G + task image per task, isolated grader).
 # Field names checked against prime-rl 389eacb configs.
 
 max_steps = 5                    # minimal smoke: LoRA load + weight sync over several steps
 seq_len = 32768                  # the served context; compaction keeps branches under ~16K
+
+# Checkpoints make the run resumable (smoke attempt 3 was preempted at step 2 and Modal restarted it
+# from step 0). Each holds trainer (LoRA, optimizer, scheduler; DCP also writes the frozen base
+# weights) + orchestrator (progress, data position). s11 copies each complete one to the Volume.
+[ckpt]
+interval = 2                     # steps; the smoke run checkpoints at 2 and 4 (+ the final step)
+keep_last = 2                    # on the container's local disk
 
 [deployment]
 gpus_per_node = 2                # default 8; one train GPU + one inference GPU (the defaults)
