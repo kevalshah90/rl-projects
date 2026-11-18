@@ -37,9 +37,11 @@ lr = 2e-5                        # trainer default 1e-6 is sized for full fine-t
                                  # ~10-50x more (prime-rl's LoRA example: 5e-5). Mid value.
 
 [orchestrator]
-batch_size = 16                  # SAMPLES per step, not episodes: each branch is a sample and ~80%
-                                 # of episodes compact into 2 (check 3), so 16 ~= 2 tasks x 4 rollouts.
-                                 # Minimal smoke for the 10-GPU cap; the real run wants ~56 (8 groups).
+batch_size = 16                  # TRACES (= episodes here) per step, not branch samples: the train sink
+                                 # cuts the first batch_size queued traces, each carrying all its branches
+                                 # (orchestrator/train_sink.py). 16 = 4 groups of 4 (~29 samples).
+                                 # Groups enter whole (advantages need all 4); unanimous groups are dropped.
+                                 # Minimal smoke for the 10-GPU cap; the real run wants 32 (8 groups).
 max_staleness = 1                # default 8; keep the smoke run close to on-policy
 
 [orchestrator.concurrency]

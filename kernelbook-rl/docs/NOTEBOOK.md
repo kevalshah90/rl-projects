@@ -519,6 +519,21 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - Architecture page (`docs/rl-architecture.html`) and README brought up to date (Modal-hosted
   orchestrator, prime-rl stack, A10G, smoke config); pushed with the check 2-4 commits.
 
+### 2026-11-18: correction: `batch_size` counts traces (episodes), not branch samples
+- Read `orchestrator/train_sink.py`: episodes wait in `pending_groups` until the whole group is graded;
+  then `score_group` computes advantages over all 4; zero-advantage (unanimous) groups are dropped;
+  each surviving trace goes to `pending_batch` with ALL its samples (1-2 branches). A batch is the
+  first `batch_size` queued **traces** (`list(pending_batch.items())[: batch_size]`).
+- So the config docstring "Samples to train on per step" is misleading. The earlier entry's
+  "56 samples ~= 8 groups" is wrong: 56 would be 14 groups. Smoke `batch_size = 16` = 4 groups.
+  Real run for 8 groups: `batch_size = 32`.
+- A group can be split across batches (queue at 14 + a group of 4 -> 16 cut, 2 wait), but its
+  advantages were computed on the whole group first; the remainder just trains one step later
+  (one version staler; may be stale-masked at `max_staleness = 1`). With size-4 groups and a
+  multiple-of-4 batch, splits only follow dropped traces (errors, stale).
+- Effect on the smoke run: ~24-28 episodes per step (unanimous groups are dropped), ~50-70 min per
+  step at 4 in flight; the 6 h timeout may end it at step 4-5. Weight sync is proven by step 1-2.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
