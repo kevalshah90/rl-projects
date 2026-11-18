@@ -566,6 +566,26 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   53.5 GiB); episodes kept running after the trainer's v1 broadcast. Not yet proven: steps 2-5.
 - Relaunch also carries the compaction fix (`summarize_at_tokens = 16384`).
 
+### 2026-11-18: smoke attempt 3 (spawned): steps 1-2 complete, then Modal preemption
+- App `ap-FhzJfqylaHFm2eGpOJgeyF`, run `rl_smoke/kernelbook--qwen3.5-9b--56a9c1c6`, compaction pinned.
+- Orchestrator: step 1 28m33s, reward 0.31, Branches 2.1, Turns 25.8, staleness 0, truncation 69%;
+  step 2 19m28s, reward 0.38, Branches 2.2, Turns 25.1, **staleness 0 => all step-2 tokens sampled by v1**.
+- Trainer: step 1 loss 0.0051, entropy 0.47, mismatch KL 0.0002, grad norm 0.017, 53.5 GiB;
+  step 2 loss 0.0086, entropy 0.49, **mismatch KL 0.0003 with the trained v1 adapter**, grad norm
+  0.018, 48.3 GiB, 4,550 tok/s (step 1 included kernel compiles).
+- **Proven:** full loop twice; vLLM serves a trained LoRA adapter that includes the linear-attention
+  (GDN) projections (no fallback to default targets needed); vLLM/trainer agreement holds after
+  updates; memory stable; trainer ~1-2 min per step, rollouts are the bottleneck.
+- ~17:21: `Container terminated due to preemption. Your Function will be restarted with the same
+  input.` Modal re-ran `smoke_run` from scratch on a new container (run `...c7cf0b91`, 17:22:56):
+  no checkpoint, so it restarts at step 0.
+- **Lesson for the real run:** must be resumable: `[ckpt] interval`, a fixed `run.name` (resume needs
+  a predictable run dir), and checkpoints on the Volume, not the container's local disk.
+- Open (from this run): episodes compact twice far more often than baseline/E0 (57% vs 12%) with the
+  same 16,384 threshold and the same ~620 output tokens per turn; cause is in how the rl path
+  (interception -> renderer -> /inference/v1/generate) builds or reports context. To diagnose
+  before the real run (comparability with E0).
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
