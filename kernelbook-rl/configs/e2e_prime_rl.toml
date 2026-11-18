@@ -1,0 +1,43 @@
+# Check 2 (end to end): one task through prime-rl's verifiers (a12316c) with our Modal plugin.
+# Same task and settings as the s10 smoke test on our verifiers (da75527), which went 3/4 on
+# kernelbook/00456-smoothl1loss, so the two runs can be compared trace for trace.
+# Differences from configs/baseline_train.toml:
+#   - runtime: type = "custom" + our plugin (verifiers dropped the built-in Modal runtime)
+#   - one task, 4 rollouts, its own output dir
+# Run (from the project root; vLLM deployed, ping it first with scripts/s09_ping.py):
+#   uv run modal run --detach scripts/s11_prime_rl_image.py --which e2e
+
+model = "Qwen/Qwen3.5-9B"
+num_rollouts = 4
+max_concurrent = 4
+                                 # (no `push`: vf-run has no upload option; results stay local)
+output_dir = "work.nosync/outputs/e2e_prime_rl"
+
+[client]
+base_url = "https://kevalshah90--kernelbook-vllm-serve.modal.run/v1"
+api_key_var = "VLLM_API_KEY"
+
+[sampling]
+temperature = 1.0
+max_tokens = 8192
+
+[select.include]
+names = ["kernelbook/00456-smoothl1loss"]
+
+[env.taskset]
+id = "kernelbook_taskset"        # prime-rl's verifiers: grading is isolated via each task's
+                                 # scoring.mode (environment_mode = "separate"), no HarborEnv
+registry_path = "work.nosync/tasks/registry-train.json"
+dataset = "kernelbook-train"
+ignore_timeouts = false          # keep task.toml's 900 s agent / 600 s grader limits
+
+[env.agent]
+max_turns = 30
+
+[env.agent.harness]
+id = "bash"
+
+[env.agent.runtime]
+type = "custom"
+import_path = "modal_runtime.ModalBackend"   # modal_runtime.py; GPU, image and network come
+                                             # from each task's task.toml, as before

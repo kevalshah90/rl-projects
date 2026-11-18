@@ -187,6 +187,54 @@ def check_runtime() -> None:
     print(f"-> exit {code}", flush=True)
 
 
+PORT = 8765   # interception server's fixed port, published with modal.forward (as in s10)
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("kernelbook-vllm")],   # VLLM_API_KEY
+    volumes={"/runs": runs},
+    cpu=2, memory=8192, timeout=3 * 60 * 60,
+)
+def e2e(config: str = "configs/e2e_prime_rl.toml", dry_run: bool = False, args: str = "") -> None:
+    """Check 2 end to end: vf-run (prime-rl's verifiers) on our tasks with the Modal plugin.
+    Same transport as s10: the interception server runs here, and sandboxes reach it at a
+    modal.forward URL (custom tunnel). Traces go to the Volume under e2e_prime_rl/."""
+    import subprocess
+    import threading
+    import tomllib
+
+    regs = container_registries()
+    cfg = tomllib.loads((KB / config).read_text())
+    registry = regs / Path(cfg["env"]["taskset"]["registry_path"]).name
+    out = Path("/runs") / Path(cfg["output_dir"]).name
+    cmd = ["vf-run", "@", config, "--env.taskset.registry_path", str(registry), "-o", str(out),
+           *args.split()]
+    if dry_run:
+        cmd += ["--dry-run"]
+
+    stop = threading.Event()
+
+    def keep_committing() -> None:   # traces visible in the Volume while the run goes
+        while not stop.wait(60):
+            runs.commit()
+
+    threading.Thread(target=keep_committing, daemon=True).start()
+    with modal.forward(PORT) as tunnel:
+        cmd += ["--env.interception.type", "server",
+                "--env.interception.tunnel.type", "custom",
+                "--env.interception.tunnel.url", tunnel.url,
+                "--env.interception.tunnel.port", str(PORT)]
+        print("interception server reachable at", tunnel.url, flush=True)
+        print("$", " ".join(cmd), flush=True)
+        code = subprocess.run(cmd, cwd=KB).returncode
+    stop.set()
+    runs.commit()
+    print(f"-> exit {code}", flush=True)
+
+
 @app.local_entrypoint()
-def main(which: str = "image") -> None:
+def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
+    if which == "e2e":
+        e2e.remote(dry_run=dry_run, args=args)
+        return
     {"image": check, "taskset": check_taskset, "runtime": check_runtime}[which].remote()

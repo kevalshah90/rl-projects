@@ -22,7 +22,7 @@ Use (host side; this module must be importable wherever the config is loaded):
 
 import asyncio
 import contextlib
-import logging
+
 import re
 import shlex
 import uuid
@@ -45,10 +45,14 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.network import parse_network_rule
 from verifiers.v1.utils.scope import run_scope
 
-logger = logging.getLogger(__name__)
+# Under verifiers' logger namespace, so vf-run / prime-rl print our lines (they configure
+# only `verifiers.*`). Each sandbox start is logged with its image, GPU and network policy,
+# which is how a run shows the agent box and the separate grader box.
+logger = get_logger("verifiers.v1.runtimes.modal_plugin")
 
 _APP_NAME = "verifiers-v1"   # same shared Modal app the old runtime attached sandboxes to
 
@@ -206,8 +210,9 @@ class ModalBackend(RuntimeBackend):
             ):
                 await run_shielded(self._create_sandbox(app))
             self.info.id = self._sandbox.object_id
-            logger.info("modal: sandbox %s up (image=%s, gpu=%s)",
-                        self.info.id, self.config.image, self.config.gpu)
+            logger.info("modal: sandbox %s up (name=%s image=%s gpu=%s allow=%s)",
+                        self.info.id, self.name, self.config.image, self.config.gpu,
+                        self.config.allow)
             await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
         except Exception as e:  # provisioning failure is one rollout's problem, not the run's
             raise SandboxError(f"modal sandbox provisioning failed: {e}") from e

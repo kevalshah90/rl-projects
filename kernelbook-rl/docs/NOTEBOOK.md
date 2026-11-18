@@ -372,6 +372,34 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   with the plugin: A10G agent box -> vLLM -> isolated grader box -> reward. Compare its trace and
   reward with the da75527 smoke test (00456-smoothl1loss).
 
+### 2026-11-17: check 2 done: end to end on prime-rl's verifiers + Modal plugin (`configs/e2e_prime_rl.toml`)
+- **Setup:** `vf-run` (renamed from `vf-eval`) in the s11 image, run detached on Modal. The
+  interception server is behind `modal.forward` (same transport as s10). Config = baseline settings,
+  `runtime type = "custom"` (our plugin), and `push` removed (`vf-run` has no upload option).
+  Task: 00456-smoothl1loss x 4 (as in the s10 smoke test).
+- **Result:** 4/4 clean, **3/4 pass** (s10 on old verifiers: 3/4).
+  - Passes: 4, 15 and 30 turns.
+  - Fail: 30 turns, stopped at the `runs` gate.
+  - Per-gate metrics, `kernel_launches` and `max_abs_diff` come through as before; 0 leftover sandboxes.
+  - Run: `work.nosync/outputs/e2e_prime_rl/...--960c9af1` (Volume `kernelbook-runs`).
+- **Isolation proven** (1-episode rerun, `e2e_grader_check`, with the plugin's sandbox log made visible):
+  - agent box `sb-7LW2...`: kernel-env-base, A10G:1, egress = only the interception host;
+  - then a separate grader box `sb-x56J...`: same image, A10G:1, egress `domains=[] cidrs=[]` (none);
+  - reward 1. Traces under both verifiers record only the agent's sandbox id, so this log line is
+    the evidence.
+- **Trace format:** a superset of the old one (new: `attempt`, `num_turns`, `usage`, `num_branches`,
+  `is_truncated`, ...). `token_ids`/`logprobs` are empty because the eval client doesn't request them.
+- **Finding: context compaction in ~80% of episodes (old and new verifiers alike).**
+  - The `bash` harness compacts by default when 16K tokens remain below the context window (our
+    32K server -> at ~16K tokens). The model writes a "handoff summary", then the conversation
+    restarts from it, so the trace has 2 branches.
+  - Compacted share: baseline batches 75% / 79% / 79%, E0 174/216 = 81%, e2e 2/4.
+  - Comparability: the baseline, E0 and training all use the same behavior, so before/after
+    numbers are unaffected.
+  - Training: a compacted episode is 2 token sequences (pre-summary and post-summary), not 1. How
+    prime-rl turns branches into samples, and whether both get the episode's reward, is now a
+    question for check 3. Credit assignment differs from a single trajectory.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -400,6 +428,8 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - **Token data:** eval traces (vf-eval `EvalClient`) have no token ids / logprobs; training must use the prime-rl client.
 - **Off-policy data:** training batches are up to `max_staleness` versions old and carry vLLM-vs-trainer numeric
   mismatch; report the IPO-masked fraction and mismatch KL so readers can judge how on-policy the run was.
+- **Context compaction:** ~80% of episodes (baseline, E0) hit the harness's compaction at ~16K tokens and
+  continue from a model-written summary. Results are for this agent setup (32K context, 30 turns, compaction on).
 - **Infra failures excluded:** errored episodes are dropped from pass rates, not counted as fails.
 
 ## 6. Ideas for the report / paper
