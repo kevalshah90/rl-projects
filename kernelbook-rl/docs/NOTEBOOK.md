@@ -400,6 +400,41 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
     prime-rl turns branches into samples, and whether both get the episode's reward, is now a
     question for check 3. Credit assignment differs from a single trajectory.
 
+### 2026-11-17: part 1, check 3: the qwen3.5 renderer (`scripts/s12_renderer_check.py`, run via s11 `--which renderer`)
+- **What it is:** prime-rl's `renderers` library. It turns messages into exact token ids and parses
+  sampled ids back into reasoning/content/tool calls, so the trainer scores exactly the tokens vLLM
+  sampled. Eval instead used vLLM's chat endpoint (HF template + `qwen3_coder` parser, tokens
+  hidden). `Qwen/Qwen3.5-9B` maps to `Qwen35Renderer`.
+- **Test:** real conversations from the e2e run: 4 episodes, 6 branches (2 compacted), 79 assistant
+  turns, 75 tool calls. Tools passed in the training client's nested `tool_to_wire` form.
+- **Result (after the patch below):**
+  - renderer == HF `apply_chat_template` token for token on 6/6 branches;
+  - each turn's generation prompt is an exact prefix of the full render: 79/79;
+  - the renderer's parser and vLLM's `qwen3_coder` parser both recover the original calls: 79/79.
+- **Bug found and patched:** `renderers/parsing.py` (pinned `a9d1676`, still on upstream main `9f4943f`)
+  does `arg_value = pm.group(2).strip()`, removing ALL leading/trailing whitespace from every tool
+  argument. Before the patch, 10/79 calls differed.
+  - Effect: `edit` `old_str`/`new_str` lose their indentation, so edits fail to match or write
+    unindented code. Training would run a different environment than eval (vLLM keeps whitespace).
+  - The training tokens themselves are unaffected.
+  - Fix: a one-line patch in the s11 image (`pm.group(2)`, unstripped; the regex already removes
+    the template's newline per side). The build asserts the target line exists.
+  - renderers' own Qwen3.5/round-trip/parsing tests with the patch: **2005 passed**.
+  - Upstream report: not filed yet (outward-facing; ask first).
+- **Test-harness gotcha:** a site-packages dependency ships a top-level `tests` package, which shadows
+  renderers' `tests`. Fixed in the throwaway test container (`__init__.py` + PYTHONPATH).
+- **Compaction -> training samples** (read from prime-rl `orchestrator/trajectories.py`,
+  `algo/routing.py`, verifiers `Trace.branches`):
+  - each branch becomes **one training sample** (its own token sequence, each within `seq_len`), so
+    a compacted episode gives 2 samples: branch 1 = the original context up to the model's summary;
+    branch 2 = a fresh context starting from the summary (as a user message, masked) + the rest;
+  - GRPO computes **one advantage per episode** (reward - group mean). `assign_advantages` copies it
+    to every sampled token on every trainable branch, **including the summary the model wrote**;
+  - a node shared by 2 branches is trained only once (in the first branch); the compaction branch
+    is trainable because the harness resumed from it;
+  - consequences: ~1.8 samples per episode at our compaction rate; summary-writing is reinforced by
+    the episode outcome; with token-mean loss, long (compacted) episodes contribute more tokens.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -416,6 +451,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Importance ratio against vLLM log probs, small `max_staleness` | One ratio corrects async lag, mid-episode swaps and engine mismatch; keeping lag small keeps the advantage approximation valid |
 | Lean prime-rl image (gpu + flash-attn extras), `uv sync --frozen` | Single node, 2 H100s needs no UCX/NIXL/EFA; `--frozen` = prime-rl's exact tested versions (`--locked` fails on its rolling cooldown) |
 | Modal sandboxes via our own verifiers runtime plugin (training) | prime-rl's verifiers dropped built-in Modal; a plugin keeps A10G + same images as baseline/E0 (comparability) |
+| Patch renderers' Qwen3.5 tool-arg `.strip()` in our image | Keeps tool arguments byte-identical to vLLM's qwen3_coder parser (baseline/E0); otherwise training-time edits lose indentation |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up

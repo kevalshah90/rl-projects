@@ -57,6 +57,22 @@ image = (
     .run_commands(
         f"uv pip install --python {VENV}/bin/python modal==1.6.1 pytest pytest-asyncio pytest-timeout",
     )
+    # Local patch to prime-rl's pinned renderers (a9d1676; unchanged on upstream main 9f4943f).
+    # Its Qwen3.5 tool-call parser strips ALL leading/trailing whitespace from every parameter
+    # value (`pm.group(2).strip()`), on top of the regex already removing the template's one
+    # newline per side. vLLM's qwen3_coder parser (our baseline/E0) keeps the value as written.
+    # Without the patch, training-time `edit` calls lose indentation in old_str/new_str (no match,
+    # or unindented code): the agent would act in a different environment than in eval.
+    # Found by check 3 (s12): 10/79 calls differed. The assert fails the build if the line moved.
+    .run_commands(
+        f"python3 - <<'EOF'\n"
+        f"p = '{APP}/deps/renderers/renderers/parsing.py'\n"
+        f"s = open(p).read()\n"
+        f"old = 'arg_value = pm.group(2).strip()'\n"
+        f"assert s.count(old) == 1, 'renderers patch target not found exactly once'\n"
+        f"open(p, 'w').write(s.replace(old, 'arg_value = pm.group(2)  # kernelbook patch: keep whitespace'))\n"
+        f"EOF",
+    )
     .env({
         "PATH": f"{VENV}/bin:/usr/local/bin:/usr/bin:/bin",   # `rl`, `vf-eval`, python -> the venv
         "PYTHONPATH": str(KB),                                 # `import kernelbook_taskset, kernel_env`
@@ -64,6 +80,7 @@ image = (
     .add_local_dir(PROJECT / "kernel_env", f"{KB}/kernel_env", ignore=_skip)
     .add_local_file(PROJECT / "kernelbook_taskset.py", f"{KB}/kernelbook_taskset.py")
     .add_local_file(PROJECT / "modal_runtime.py", f"{KB}/modal_runtime.py")
+    .add_local_file(PROJECT / "scripts/s12_renderer_check.py", f"{KB}/scripts/s12_renderer_check.py")
     .add_local_dir(PROJECT / "configs", f"{KB}/configs", ignore=_skip)
     .add_local_dir(PROJECT / "work.nosync/tasks", f"{KB}/work.nosync/tasks", ignore=_skip)
 )
@@ -232,9 +249,34 @@ def e2e(config: str = "configs/e2e_prime_rl.toml", dry_run: bool = False, args: 
     print(f"-> exit {code}", flush=True)
 
 
+@app.function(cpu=4, memory=16384, timeout=30 * 60, volumes={"/runs": runs})
+def check_renderer(run: str = "e2e_prime_rl/kernelbook_taskset--qwen--qwen3.5-9b--bash--960c9af1") -> None:
+    """Check 3: scripts/s12_renderer_check.py on real e2e conversations (CPU; downloads the
+    Qwen3.5-9B tokenizer only, not the weights)."""
+    import os
+    import subprocess
+    code = subprocess.run(["python", "scripts/s12_renderer_check.py",
+                           f"/runs/{run}/traces.jsonl"], cwd=KB).returncode
+    print(f"-> exit {code}", flush=True)
+    # renderers' own tests for Qwen3.5 + round trips: the whitespace patch must not break them.
+    # A site-packages dependency ships a top-level `tests` package, which shadows renderers'
+    # namespace package `tests`; an __init__.py (in this throwaway container only) fixes that.
+    shadow = subprocess.run(["python", "-c", "import tests; print(tests.__file__)"],
+                            capture_output=True, text=True, cwd="/").stdout.strip()
+    print("\nshadowing `tests` package:", shadow or "none", flush=True)
+    (APP / "deps/renderers/tests/__init__.py").touch()
+    print("$ pytest renderers tests (qwen35 / roundtrip / parsing)", flush=True)
+    code = subprocess.run(["python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider",
+                           "-k", "qwen35 or Qwen35 or roundtrip or parse", "-x", "--timeout", "600"],
+                          cwd=APP / "deps/renderers",
+                          env={**os.environ, "PYTHONPATH": f"{APP}/deps/renderers/tests:{APP}/deps/renderers:{KB}"}).returncode
+    print(f"-> exit {code}", flush=True)
+
+
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
         return
-    {"image": check, "taskset": check_taskset, "runtime": check_runtime}[which].remote()
+    {"image": check, "taskset": check_taskset, "runtime": check_runtime,
+     "renderer": check_renderer}[which].remote()
