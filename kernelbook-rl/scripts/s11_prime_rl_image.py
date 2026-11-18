@@ -381,7 +381,7 @@ def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
     print("WANDB_API_KEY present:", bool(os.environ.get("WANDB_API_KEY")), "| W&B login verified:",
           wandb.login(verify=True), flush=True)
     cfg = resolve_rl_config(config, "https://dry-run.invalid")   # no tunnel needed to validate
-    out = Path("/runs/checks/rl_smoke_dry")
+    out = Path("/runs/checks") / f"{Path(config).stem}_dry"
     shutil.rmtree(out, ignore_errors=True)
     # the same flags rl_run passes on a restart (--resume with no checkpoint = start fresh)
     cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out), "--run.name", "dry",
@@ -521,7 +521,7 @@ def main(which: str = "image", dry_run: bool = False, args: str = "",
          config: str = "configs/rl_smoke.toml", run_name: str = "") -> None:
     if which in ("smoke", "rl"):
         if dry_run:
-            smoke_dry_run.remote()
+            smoke_dry_run.remote(config=config)   # validates the config being launched
             return
         # The run name is the resume key: relaunching with the same name continues from its
         # newest checkpoint on the Volume (/runs/rl/<name>); a new name starts fresh.

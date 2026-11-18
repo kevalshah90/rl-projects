@@ -1,0 +1,93 @@
+# Real RL run: prime-rl `rl`, Qwen3.5-9B + LoRA, one node with 2 H100s (1 vLLM + 1 trainer), on
+# the 138 trainable tasks (registry-trainable.json, s14). Same as configs/rl_smoke.toml (proven:
+# docs/NOTEBOOK.md, smoke attempt 3) except: max_steps, batch_size, W&B tags.
+# Launch (spawned; resumable by run name):
+#   uv run modal run --detach scripts/s11_prime_rl_image.py --which rl \
+#     --config configs/rl_main.toml --run-name rl-main-1
+# Validate first (CPU only):
+#   uv run modal run scripts/s11_prime_rl_image.py --which rl --config configs/rl_main.toml --dry-run
+# Agent settings match baseline / E0 exactly (bash harness, 30 turns, T = 1, 8192 tokens per turn,
+# 32K context, compaction at 16,384, A10G sandboxes), so E1 vs E0 differs only in the weights.
+#
+# Sized for the 10-GPU Modal cap (4 episodes in flight). If the cap is raised to ~34:
+#   max_inflight = 16, max_steps = 50.
+
+max_steps = 20                   # optimizer updates; ~1-1.5 h each at 4 in flight -> ~24 h.
+                                 # 20 x 32 = 640 graded episodes, ~4.6 passes over the 138 tasks
+seq_len = 32768                  # per training sample (one branch); compaction keeps branches ~16-25K
+
+# Resumable (s11 rl_run): complete checkpoints are copied to the Volume; a preemption restart or a
+# relaunch with the same --run-name continues from the newest. Checkpoint = full model state
+# (~18 GB if bf16) + LoRA optimizer + orchestrator progress.
+[ckpt]
+interval = 2                     # a preemption loses at most ~2-3 h
+keep_last = 2                    # on the container's local disk (the Volume also keeps 2)
+
+# Every metric in metrics.jsonl (file monitor stays on) + W&B system metrics (GPU / CPU / RAM /
+# disk / network), live, in one shared run named after --run-name. Key: Modal secret
+# `wandb-secret` (s11). s11 also samples both GPUs with nvidia-smi into rl/<name>/system/.
+[monitors.wandb]
+project = "kernelbook-rl"
+tags = ["main", "qwen3.5-9b", "lora-r16", "gdn-lora"]
+
+[deployment]
+gpus_per_node = 2                # one train GPU + one inference GPU
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+[inference.vllm]
+max_model_len = 32768            # as s09_serve.py (E0)
+
+# LoRA r16 / alpha 32, incl. the GatedDeltaNet (linear attention) projections of 24 of 32 layers:
+# 40.1M trainable. Trainer backward at 32K fits (52.7 GiB, check 4); vLLM serves the adapter (smoke).
+[trainer.model.lora]
+rank = 16
+alpha = 32.0
+target_modules = [
+  "q_proj", "k_proj", "v_proj", "o_proj",      # full attention (8 layers)
+  "gate_proj", "up_proj", "down_proj",         # MLPs (all 32 layers)
+  "in_proj_qkv", "in_proj_z", "out_proj",      # linear attention / GatedDeltaNet (24 layers)
+]
+
+[trainer.optim]
+lr = 2e-5                        # LoRA needs ~10-50x the full-FT default (1e-6); smoke grad norm ~0.017
+
+[orchestrator]
+batch_size = 32                  # TRACES (episodes) per step = 8 groups of 4 (~58 branch samples).
+                                 # Unanimous groups (all pass / all fail) are dropped before batching.
+max_staleness = 1                # near on-policy; smoke: mismatch KL 2-3e-4, 0 IPO-masked tokens
+
+[orchestrator.concurrency]
+max_inflight = 4                 # 10-GPU cap: 2 H100 + 4 x (agent A10G + grader A10G)
+
+[orchestrator.train]
+group_size = 4                   # rollouts per task (GRPO group), as baseline / E0
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 8192     # per turn, as baseline / E0
+
+[orchestrator.renderer]
+name = "qwen3.5"                 # our image patches its tool-argument .strip() bug
+
+[[orchestrator.train.source]]
+name = "kernelbook"
+env.taskset.id = "kernelbook_taskset"
+env.taskset.registry_path = "work.nosync/tasks/registry-trainable.json"   # s11 swaps in container paths
+env.taskset.dataset = "kernelbook-trainable"
+env.taskset.ignore_timeouts = false        # keep task.toml's 900 s agent / 600 s grader limits
+env.agent.max_turns = 30
+env.agent.harness.id = "bash"
+# Pinned: under `rl` the harness can't discover the context window (via prime-rl's router) and would
+# silently run with NO compaction (smoke attempt 2). 16384 = what baseline / E0 got by discovery.
+env.agent.harness.compaction.summarize_at_tokens = 16384
+env.agent.runtime.type = "custom"
+env.agent.runtime.import_path = "modal_runtime.ModalBackend"
+# Sandboxes reach the env worker's interception server through a modal.forward tunnel (s11).
+env.interception.type = "server"
+env.interception.tunnel.type = "custom"
+env.interception.tunnel.url = "__TUNNEL_URL__"                           # s11 fills this in
+env.interception.tunnel.port = 8765
+serve.pool.type = "static"
+serve.pool.num_workers = 1

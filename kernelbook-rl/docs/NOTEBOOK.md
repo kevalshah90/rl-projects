@@ -638,14 +638,23 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - **The earlier "57% compact twice" was wrong:** I read prime-rl's Branches as compactions + 1.
   One compaction makes **3 branches** (3 training samples), all sharing the episode's advantage:
   1. the context up to the compaction;
-  2. the summary request (rolled back to the last state under the threshold, + the compaction
-     instruction; its response, the summary, is trained on too);
+  2. the summary request: the same turns + the compaction instruction as a new user message.
+     The chat template drops reasoning from assistant turns before the latest user message, so
+     this prompt is re-rendered without the past thinking (a different token prefix, hence its
+     own branch) and is shorter (example: 16,497 -> 12,243 tokens). Its response, the summary, is
+     trained on too;
   3. the continuation from the summary.
 
   Verified per trace: 0 compactions -> 1 branch, 1 -> 3, 2 -> 4-5. Branches 2.1-2.2 =
   ~0.55 compactions per episode.
-- Also in E0's call log: one compaction shows up as two prompt-size drops (rollback for the summary
-  call, then the small continuation prompt).
+- Also in E0's call log: one compaction shows up as two prompt-size drops (the summary call, whose
+  prompt lost the past reasoning, then the small continuation prompt). Same template in both paths.
+- Worked example (smoke, `kernelbook/00018-tripletloss`, trace `886c10bf`, reward 0): crossed at
+  call 21 (15,490 + 1,007 >= 16,384). The summary misstates the reference's loss
+  (`clamp(margin + mean(pos) - mean(neg))` instead of the mean over positions of
+  `clamp(margin + pos - neg)`), and the continuation trusts it. The final turn spent all 8,192
+  tokens thinking, made no tool call, and the episode ended (`agent_completed`). Write-up example of
+  compaction losing information.
 - Conclusion: no fix needed; the rl path is comparable with E0 on context handling.
 - Write-up note: the model is trained on its own summaries (branch 2), so RL also shapes how it
   compacts.
@@ -677,6 +686,15 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - Not covered: the sandboxes' A10Gs (separate Modal containers; Modal dashboard per app).
 - To check in the first real run: both GPUs appear in W&B; whether a resume continues the same
   W&B run or starts a new one with the same name.
+
+### 2026-11-18: real-run config `configs/rl_main.toml`; launched as `rl-main-1`
+- Smoke config (proven in attempt 3) with: `max_steps` 20, `batch_size` 32 traces (8 groups,
+  ~58 samples), W&B tags `main`. Everything the agent sees is unchanged from baseline / E0.
+- Sized for the 10-GPU cap: 4 in flight, ~1-1.5 h/step -> ~24 h. 640 graded episodes, ~4.6 passes
+  over the 138 tasks. If the cap rises: `max_inflight` 16, `max_steps` 50.
+- s11 `--dry-run` now validates the `--config` passed (it always checked rl_smoke.toml).
+  Dry run of rl_main: all fields resolve as intended; W&B key verified.
+- Launch: `--which rl --config configs/rl_main.toml --run-name rl-main-1` (spawned, resumable).
 
 ## 4. Decisions (and why)
 
