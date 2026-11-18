@@ -581,10 +581,8 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   no checkpoint, so it restarts at step 0.
 - **Lesson for the real run:** must be resumable: `[ckpt] interval`, a fixed `run.name` (resume needs
   a predictable run dir), and checkpoints on the Volume, not the container's local disk.
-- Open (from this run): episodes compact twice far more often than baseline/E0 (57% vs 12%) with the
-  same 16,384 threshold and the same ~620 output tokens per turn; cause is in how the rl path
-  (interception -> renderer -> /inference/v1/generate) builds or reports context. To diagnose
-  before the real run (comparability with E0).
+- ~~Open: episodes compact twice far more often than baseline/E0~~ wrong, a misreading of the
+  Branches metric (one compaction = 3 branches); see the compaction diagnostic entry below.
 
 ### 2026-11-18: restarted smoke run stopped; runs made resumable (s11 `rl_run`, `[ckpt]`)
 - Stopped `ap-FhzJfqylaHFm2eGpOJgeyF` (the post-preemption restart, back at step 0): it would only
@@ -613,6 +611,72 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   Starting from scratch".
 - Not yet exercised on GPU: checkpoint size/copy time (expect ~18 GB if bf16; more if the DCP state
   is fp32) and an actual resume. Test: run to the step-2 checkpoint, stop the app, relaunch same name.
+- Decision (user): skip the dedicated GPU resume test. The first real run exercises it: watch the
+  first checkpoint's size and Volume copy time in the log; if Modal preempts, check the restart
+  says `resuming <name> from Volume checkpoint step_N` and continues at N+1.
+
+### 2026-11-18: compaction diagnostic: no extra compaction under `rl` (it was a metric misreading)
+- Question: does the `rl` path (interception -> renderer -> `/inference/v1/generate`) compact more
+  than E0 (vLLM `/chat/completions`)? That would break comparability with E0.
+- Trigger (verifiers a12316c, `harnesses/utils/compaction.py`): `usage.prompt_tokens +
+  usage.completion_tokens` of the last response + estimated tool-result tokens >= threshold.
+  Under training, usage is `len(prompt_ids)` / `len(completion_ids)` (`clients/train.py`); under
+  E0 it is vLLM's full prompt count. Same quantity.
+- Measured from traces, per model call (script: scratchpad `compaction_diag.py`; E0 = 216 dev
+  traces, 5,822 calls; smoke attempt 3 = 62 traces, 1,353 calls):
+
+  | per call | E0 | rl smoke |
+  |---|---|---|
+  | prompt tokens (mean / p90) | 7,812 / 14,500 | 7,324 / 13,999 |
+  | output tokens (mean / median) | 634 / 455 | 626 / 442 |
+  | growth beyond previous output (= tool result + template, mean / median) | 200 / 62 | 203 / 58 |
+
+  Context grows the same way in both paths.
+- Compactions counted directly (user messages "CONTEXT CHECKPOINT COMPACTION"): E0 0: 19%,
+  1: 70%, 2: 11%. Smoke, the 15 finished traces: 0: 3, 1: 11, 2: 1. Same as E0. (All 62, including
+  episodes cut by preemption: 48% / 48% / 3%.)
+- **The earlier "57% compact twice" was wrong:** I read prime-rl's Branches as compactions + 1.
+  One compaction makes **3 branches** (3 training samples), all sharing the episode's advantage:
+  1. the context up to the compaction;
+  2. the summary request (rolled back to the last state under the threshold, + the compaction
+     instruction; its response, the summary, is trained on too);
+  3. the continuation from the summary.
+
+  Verified per trace: 0 compactions -> 1 branch, 1 -> 3, 2 -> 4-5. Branches 2.1-2.2 =
+  ~0.55 compactions per episode.
+- Also in E0's call log: one compaction shows up as two prompt-size drops (rollback for the summary
+  call, then the small continuation prompt).
+- Conclusion: no fix needed; the rl path is comparable with E0 on context handling.
+- Write-up note: the model is trained on its own summaries (branch 2), so RL also shapes how it
+  compacts.
+
+### 2026-11-18: observability: W&B (all metrics + system) and a GPU sampler
+- Asked for: every training metric (what `metrics.jsonl` has) plus system metrics (GPU and others).
+- Already on: prime-rl's file monitor. The smoke run wrote 1,475 metric series:
+  - loss side: `mismatch_kl` (+ by staleness), `is_masked`, `importance_ratio`, `entropy`, loss,
+    `optim`;
+  - rollouts: staleness, reward, `dispatcher/errored`;
+  - inference: `inference/*` from vLLM;
+  - per-episode traces under `monitors/file/traces/`.
+- Added `[monitors.wandb]` (project `kernelbook-rl`), **online**:
+  - prime-rl fans every metric log out to all monitors, so W&B gets the same metrics as the file;
+  - under `rl`, trainer + orchestrator write one shared W&B run (labelled writers), named after
+    our run name;
+  - W&B's system monitor runs in both processes: GPU util / memory / power / temperature, CPU,
+    RAM, disk, network.
+  - Key: the user rejected the original W&B key and re-issued `wandb-secret` with a new one
+    (2026-11-18 12:57). s11 `WANDB` references only the secret name. The dry run checks the key
+    is present and verified by W&B (read-only login, creates no run): OK.
+  - Offline was considered: prime-rl rejects `monitors.wandb.offline = true` under `rl` (the
+    shared run is online-only); offline would mean one separate run per process, synced later.
+  - `WANDB_DIR` sits next to the run dir; inside it, prime-rl's "run dir already used" guard
+    would trip on a fresh start. It is mirrored to `/runs/rl/<name>/wandb` as a backup.
+- vLLM's process doesn't log to W&B, so its GPU may be missing from W&B's system panel.
+  `rl_run` also runs `nvidia-smi -l 15` over both GPUs (util, memory, power, temperature, SM
+  clock) into `/runs/rl/<name>/system/gpu-<start>.csv`, one file per container.
+- Not covered: the sandboxes' A10Gs (separate Modal containers; Modal dashboard per app).
+- To check in the first real run: both GPUs appear in W&B; whether a resume continues the same
+  W&B run or starts a new one with the same name.
 
 ## 4. Decisions (and why)
 
@@ -634,6 +698,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | LoRA also on the linear-attention projections (`in_proj_qkv`, `in_proj_z`, `out_proj`) | Default targets leave attention in 24 of 32 layers frozen; +11M params (40.1M), trainer fits at 32K. Fallback to default if vLLM can't load LoRA on those modules |
 | Add `prime-kernels` + `flash_attn_3` (lockfile-pinned wheels) to the lean image | The trainer needs both on H100; same versions upstream's Dockerfile installs |
 | Resumable runs: fixed run name, checkpoints copied to the Volume only when complete, auto `--resume` | Modal preempts GPU containers and restarts from scratch (smoke attempt 3 lost 2 steps); prime-rl has no completion marker, so partial checkpoints must never be visible |
+| W&B online (one shared run) for all metrics + system stats; file monitor kept; own nvidia-smi sampler | W&B is built into prime-rl and gets every metric; online gives a live view of long runs (stalls, KL spikes); file + Volume copies keep a record if W&B fails; the sampler covers vLLM's GPU |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up

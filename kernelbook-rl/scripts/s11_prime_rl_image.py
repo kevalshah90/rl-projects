@@ -271,6 +271,7 @@ def e2e(config: str = "configs/e2e_prime_rl.toml", dry_run: bool = False, args: 
         print("interception server reachable at", tunnel.url, flush=True)
         print("$", " ".join(cmd), flush=True)
         code = subprocess.run(cmd, cwd=KB).returncode
+    smi.terminate()
     stop.set()
     runs.commit()
     print(f"-> exit {code}", flush=True)
@@ -361,8 +362,11 @@ def resolve_rl_config(config: str, tunnel_url: str) -> Path:
 # would register the run on Prime's platform. Metrics stay local (file monitor, metrics.jsonl).
 NO_PRIME = ["--no-trainer.monitors.prime", "--no-orchestrator.monitors.prime"]
 
+# WANDB_API_KEY for [monitors.wandb]: the user's Modal secret (key re-issued 2026-11-18; never in the repo).
+WANDB = modal.Secret.from_name("wandb-secret")
 
-@app.function(cpu=2, memory=8192, timeout=20 * 60, volumes={"/runs": runs})
+
+@app.function(cpu=2, memory=8192, timeout=20 * 60, volumes={"/runs": runs}, secrets=[WANDB])
 def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
     """`rl --dry-run` on the smoke config (CPU only): parse + validate + resolve the full config,
     write the per-process configs (trainer / orchestrator / inference / env workers), exit.
@@ -372,6 +376,10 @@ def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
     import shutil
     import subprocess
 
+    import os
+    import wandb   # the key is present and accepted by W&B (read-only check; creates no run)
+    print("WANDB_API_KEY present:", bool(os.environ.get("WANDB_API_KEY")), "| W&B login verified:",
+          wandb.login(verify=True), flush=True)
     cfg = resolve_rl_config(config, "https://dry-run.invalid")   # no tunnel needed to validate
     out = Path("/runs/checks/rl_smoke_dry")
     shutil.rmtree(out, ignore_errors=True)
@@ -406,6 +414,7 @@ def ckpt_steps(ckpt_dir: Path) -> list[int]:
     cpu=16, memory=131072,
     timeout=24 * 60 * 60,               # Modal's max; a run past this is relaunched with the same name
     volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
+    secrets=[WANDB],
 )
 def rl_run(config: str, run_name: str, args: str = "") -> None:
     """An RL run: `rl` (trainer + vLLM + orchestrator + env worker) on one 2-H100 container.
@@ -420,6 +429,7 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
     the trainer's startup broadcast puts that step's adapter on vLLM. This covers both a
     preemption (Modal reruns this function with the same input) and a manual relaunch with the
     same --run-name (e.g. after the 24 h timeout). Episodes in flight at the cut are lost."""
+    import os
     import shutil
     import subprocess
     import threading
@@ -428,6 +438,8 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
     out = Path("/tmp/rl")
     local = out / run_name
     mirror = Path("/runs/rl") / run_name
+    wandb_dir = Path("/tmp/rl_wandb") / run_name
+    sys_dir = Path("/tmp/rl_system") / run_name   # GPU samples for BOTH H100s (vLLM's included)
     skip = shutil.ignore_patterns("broadcasts", "weights", "checkpoints", "*.safetensors", "*.bin", "*.pt")
 
     resume = []
@@ -459,7 +471,10 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
         if local.exists():
             shutil.copytree(local, mirror, dirs_exist_ok=True, ignore=skip)
             sync_ckpts()
-            runs.commit()
+        for extra, name in [(wandb_dir, "wandb"), (sys_dir, "system")]:
+            if extra.exists():
+                shutil.copytree(extra, mirror / name, dirs_exist_ok=True)
+        runs.commit()
 
     stop = threading.Event()
 
@@ -472,6 +487,21 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
 
     threading.Thread(target=keep_syncing, daemon=True).start()
     subprocess.run("nvidia-smi --query-gpu=name,memory.used --format=csv", shell=True)
+    # W&B online: trainer + orchestrator log to one shared run (prime-rl's mode under `rl`). Its local
+    # files (full .wandb log of metrics + system stats) sit next to the run dir (inside it, prime-rl's
+    # "run dir already used" guard would trip on a fresh start) and are mirrored to <mirror>/wandb:
+    # a backup if the upload fails (`wandb sync`).
+    wandb_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["WANDB_DIR"] = str(wandb_dir)
+    # W&B's system metrics come from the processes that log to it (trainer, orchestrator); vLLM's
+    # process doesn't, so its GPU may be missing there. nvidia-smi samples every GPU every 15 s.
+    sys_dir.mkdir(parents=True, exist_ok=True)
+    # one file per container: a preemption restart must not overwrite the previous one's samples
+    gpu_log = open(sys_dir / f"gpu-{time.strftime('%Y%m%d-%H%M%S')}.csv", "a")
+    smi = subprocess.Popen(
+        ["nvidia-smi", "--query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,"
+         "memory.total,power.draw,temperature.gpu,clocks.sm", "--format=csv,nounits", "-l", "15"],
+        stdout=gpu_log, stderr=subprocess.STDOUT)
     with modal.forward(PORT) as tunnel:
         cfg = resolve_rl_config(config, tunnel.url)
         cmd = ["rl", "@", str(cfg), "--output-dir", str(out), "--run.name", run_name,
@@ -479,6 +509,7 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
         print("interception server reachable at", tunnel.url, flush=True)
         print("$", " ".join(cmd), flush=True)
         code = subprocess.run(cmd, cwd=KB).returncode
+    smi.terminate()
     stop.set()
     sync()
     hf_cache.commit()

@@ -18,6 +18,14 @@ seq_len = 32768                  # the served context; compaction keeps branches
 interval = 2                     # steps; the smoke run checkpoints at 2 and 4 (+ the final step)
 keep_last = 2                    # on the container's local disk
 
+# Metrics: every metric prime-rl writes to metrics.jsonl (the file monitor stays on) also goes to
+# W&B, live: one shared run (trainer + orchestrator as labelled writers), named after the run name.
+# W&B adds system metrics per process: GPU util / memory / power / temperature, CPU, RAM, disk,
+# network. Key from the Modal secret `wandb-secret` (s11). Local W&B files mirrored to rl/<name>/wandb.
+[monitors.wandb]
+project = "kernelbook-rl"
+tags = ["smoke", "qwen3.5-9b", "lora-r16"]
+
 [deployment]
 gpus_per_node = 2                # default 8; one train GPU + one inference GPU (the defaults)
 
