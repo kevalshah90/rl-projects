@@ -534,6 +534,26 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - Effect on the smoke run: ~24-28 episodes per step (unanimous groups are dropped), ~50-70 min per
   step at 4 in flight; the 6 h timeout may end it at step 4-5. Weight sync is proven by step 1-2.
 
+### 2026-11-18: smoke attempt 2 running; step 1 trained; compaction silently OFF under `rl`
+- Run `rl_smoke/kernelbook--qwen3.5-9b--d36ba7f0` (app `ap-uhkFllfgCPRHoCCUx1buZ2`): vLLM up behind
+  the router in 3m21s; v0 adapter synced; 4 episodes in flight; A10G sandboxes, tunnel-only egress,
+  isolated grading all as in check 2.
+- vLLM LoRA: 110 modules "will be ignored", **all `visual.*`** (unused vision tower); none of the
+  language model's projections, so LoRA wraps the linear-attention (GDN) layers too.
+- Orchestrator step 1: 19m19s, ~7 groups rolled for 16 trainable traces (unanimous groups
+  dropped), reward 0.4375, staleness 0, Turns 22.6, **Branches 1.0**, truncation 62.5%.
+- Trainer step 1: loss 0.0085, entropy 0.48, **mismatch KL 0.0002** (check 4: 0.0003), grad norm
+  0.018, peak 53.5 GiB; first step includes TileLang/GDN kernel compile.
+- **Finding: no compaction.** A trace failed: vLLM 400 "decoder prompt (length 36001) is longer than
+  the maximum model length". verifiers' bash harness compacts at (context window - 16,384) when it
+  can discover the window via `/v1/models` (`max_model_len` on the card whose id == model);
+  otherwise compaction is OFF. Under `rl` discovery evidently fails (the router / adapter-named
+  model), and vLLM's error wording isn't in `CONTEXT_OVERFLOW_MARKERS`, so overflow ends the trace
+  instead of compacting. Baseline/E0 (vLLM serve directly) discovered 32,768 -> threshold 16,384.
+  - Comparability: training episodes would run without compaction while E0 ran with it.
+  - Fix for the next run: `env.agent.harness.compaction.summarize_at_tokens = 16384` (pinned,
+    same threshold). Not applied to the running smoke run.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |

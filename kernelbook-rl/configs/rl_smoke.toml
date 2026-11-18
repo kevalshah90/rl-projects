@@ -67,6 +67,11 @@ env.taskset.dataset = "kernelbook-trainable"
 env.taskset.ignore_timeouts = false        # keep task.toml's 900 s agent / 600 s grader limits
 env.agent.max_turns = 30
 env.agent.harness.id = "bash"
+# Compaction threshold pinned to what baseline/E0 got by discovery (32768 - 16384 reserve). Under
+# `rl`, discovery via /v1/models (through prime-rl's router) finds no context window, the harness
+# silently runs with NO compaction, and long episodes die at vLLM's 32K limit (smoke attempt 2:
+# Branches 1.0, a 36,001-token prompt rejected; vLLM's wording is not in verifiers' overflow list).
+env.agent.harness.compaction.summarize_at_tokens = 16384
 env.agent.runtime.type = "custom"
 env.agent.runtime.import_path = "modal_runtime.ModalBackend"
 # Sandboxes call the model through the interception server in the env worker; they reach it via
