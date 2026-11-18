@@ -6,7 +6,7 @@
 # turn, 32K context, our Modal runtime plugin (A10G + task image per task, isolated grader).
 # Field names checked against prime-rl 389eacb configs.
 
-max_steps = 15
+max_steps = 5                    # minimal smoke: LoRA load + weight sync over several steps
 seq_len = 32768                  # the served context; compaction keeps branches under ~16K
 
 [deployment]
@@ -34,15 +34,17 @@ target_modules = [
 
 [trainer.optim]
 lr = 2e-5                        # trainer default 1e-6 is sized for full fine-tuning; LoRA needs
-                                 # ~10-50x more (prime-rl's LoRA example: 5e-5). Mid value for 15 steps.
+                                 # ~10-50x more (prime-rl's LoRA example: 5e-5). Mid value.
 
 [orchestrator]
-batch_size = 56                  # SAMPLES per step, not episodes: each branch is a sample and ~80%
-                                 # of episodes compact into 2 (check 3), so 56 ~= 8 tasks x 4 rollouts
+batch_size = 16                  # SAMPLES per step, not episodes: each branch is a sample and ~80%
+                                 # of episodes compact into 2 (check 3), so 16 ~= 2 tasks x 4 rollouts.
+                                 # Minimal smoke for the 10-GPU cap; the real run wants ~56 (8 groups).
 max_staleness = 1                # default 8; keep the smoke run close to on-policy
 
 [orchestrator.concurrency]
-max_inflight = 32                # episodes in flight; caps Modal sandboxes (2 per episode at grading)
+max_inflight = 4                 # Modal cap is 10 GPUs: 2 H100 here + 4 episodes x (agent A10G +
+                                 # grader A10G at the end) = 10 worst case. Same as the baseline.
 
 [orchestrator.train]
 group_size = 4                   # rollouts per task (GRPO group), as in the baseline

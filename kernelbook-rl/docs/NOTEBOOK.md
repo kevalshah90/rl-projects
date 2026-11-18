@@ -507,6 +507,10 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - Open question before relaunching: the Modal workspace GPU limit (10 GPUs in Oct; the reason the
   baseline ran 4 episodes at once). The smoke config holds 2 H100 + up to 32 agent A10Gs + graders.
   Either raise the limit or cap `max_inflight` (~3 at 10 GPUs, which makes 15 steps take many hours).
+- **Decided (user):** the cap stays at 10 GPUs; minimal smoke run: `max_inflight` 4 (2 H100 + 4 x
+  (agent + grader A10G) = 10 worst case, as the baseline), `batch_size` 16 samples (~2 groups),
+  `max_steps` 5, launch timeout 6 h. The real run needs ~56 samples/step, so a higher GPU limit
+  (or a ~15 h run) then. `rl --dry-run` re-run: resolves with these values.
 - Architecture page (`docs/rl-architecture.html`) and README brought up to date (Modal-hosted
   orchestrator, prime-rl stack, A10G, smoke config); pushed with the check 2-4 commits.
 

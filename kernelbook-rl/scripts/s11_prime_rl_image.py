@@ -378,7 +378,7 @@ def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
 @app.function(
     gpu="H100:2",                       # 1 vLLM + 1 trainer (deployment in the config)
     cpu=16, memory=131072,
-    timeout=8 * 60 * 60,                # 15 steps of up-to-15-min episodes, plus startup
+    timeout=6 * 60 * 60,                # 5 steps x ~20-30 min (~9 episodes, 4 in flight: 10-GPU cap) + startup
     volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
 )
 def smoke_run(config: str = "configs/rl_smoke.toml", args: str = "") -> None:
