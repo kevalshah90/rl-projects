@@ -73,6 +73,16 @@ image = (
         "flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl"
         "#sha256=44a019ca428d0866fc73ca49b8af02eb4b6a37ae8a1a6b1a07917c383a187fe6'",
     )
+    # vllm-router: prime-rl's inference launcher always fronts the vLLM engine with it (even on one
+    # node); it ships in the `disagg` extra, which the lean image leaves out. Wheel + hash from
+    # uv.lock; its deps (aiohttp, fastapi, uvicorn, ...) are already installed with vLLM.
+    .run_commands(
+        f"uv pip install --python {VENV}/bin/python --no-deps "
+        "'vllm-router @ https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/"
+        "vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl"
+        "#sha256=c2ed887d8be68430630b187c4044131bbe6d9ed4b7d99f40e2c7cc5e73a4824c'",
+        f"{VENV}/bin/vllm-router --help > /dev/null && echo 'vllm-router OK'",
+    )
     # Local patch to prime-rl's pinned renderers (a9d1676; unchanged on upstream main 9f4943f).
     # Its Qwen3.5 tool-call parser strips ALL leading/trailing whitespace from every parameter
     # value (`pm.group(2).strip()`), on top of the regex already removing the template's one

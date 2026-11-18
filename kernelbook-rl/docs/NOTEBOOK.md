@@ -511,6 +511,11 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   (agent + grader A10G) = 10 worst case, as the baseline), `batch_size` 16 samples (~2 groups),
   `max_steps` 5, launch timeout 6 h. The real run needs ~56 samples/step, so a higher GPU limit
   (or a ~15 h run) then. `rl --dry-run` re-run: resolves with these values.
+- **Smoke attempt 1** (`ap-7Yij8wCtK4u6Yl3JSHOhWp`): container got 2 H100s in ~1 min this time; env
+  worker started (taskset loaded, interception server on 8765). Failed in 1 min: `inference` always
+  starts `vllm-router` in front of the vLLM engine (even single node), and the binary is in the
+  `disagg` extra our lean image skips -> `FileNotFoundError: vllm-router`; trainer then got SIGTERM
+  from the launcher. Fix: lockfile-pinned `vllm-router` 0.2.4 wheel (with hash) as its own layer.
 - Architecture page (`docs/rl-architecture.html`) and README brought up to date (Modal-hosted
   orchestrator, prime-rl stack, A10G, smoke config); pushed with the check 2-4 commits.
 
