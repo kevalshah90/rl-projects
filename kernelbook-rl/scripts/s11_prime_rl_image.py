@@ -169,7 +169,7 @@ def container_registries() -> Path:
     import json
     out = Path("/tmp/registries")
     out.mkdir(exist_ok=True)
-    for name in ["registry-train.json", "registry-dev.json"]:
+    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json"]:
         data = json.loads((KB / "work.nosync/tasks" / name).read_text())
         for dataset in data:
             for task in dataset["tasks"]:
@@ -334,8 +334,47 @@ def check_trainer(run: str = "e2e_prime_rl/kernelbook_taskset--qwen--qwen3.5-9b-
     hf_cache.commit()
 
 
+def resolve_rl_config(config: str, tunnel_url: str) -> Path:
+    """The rl config as this container needs it: Mac registry path -> container registry,
+    tunnel placeholder -> the real modal.forward URL. Written next to nothing else in /tmp."""
+    regs = container_registries()
+    text = (KB / config).read_text()
+    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json"]:
+        text = text.replace(f'"work.nosync/tasks/{name}"', f'"{regs / name}"')
+    assert "__TUNNEL_URL__" in text, "config has no tunnel placeholder"
+    out = Path("/tmp") / Path(config).name
+    out.write_text(text.replace("__TUNNEL_URL__", tunnel_url))
+    return out
+
+
+@app.function(cpu=2, memory=8192, timeout=20 * 60, volumes={"/runs": runs})
+def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
+    """`rl --dry-run` on the smoke config (CPU only): parse + validate + resolve the full config,
+    write the per-process configs (trainer / orchestrator / inference / env workers), exit.
+    No model download, no GPU, no sandboxes. Resolved configs land in the Volume under
+    checks/rl_smoke_dry/ and are printed here."""
+    import shutil
+    import subprocess
+
+    cfg = resolve_rl_config(config, "https://dry-run.invalid")   # no tunnel needed to validate
+    out = Path("/runs/checks/rl_smoke_dry")
+    shutil.rmtree(out, ignore_errors=True)
+    cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out)]
+    print("$", " ".join(cmd), flush=True)
+    code = subprocess.run(cmd, cwd=KB).returncode
+    print(f"-> exit {code}", flush=True)
+    for f in sorted(out.rglob("*.toml")):
+        print(f"\n===== {f.relative_to(out)} =====\n{f.read_text()}", flush=True)
+    runs.commit()
+
+
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
+    if which == "smoke":
+        if not dry_run:
+            raise SystemExit("smoke: only --dry-run is wired up so far")
+        smoke_dry_run.remote()
+        return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
         return

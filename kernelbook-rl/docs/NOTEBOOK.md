@@ -463,6 +463,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   - default: **29.1M** trainable (MLPs 25.2M; q/k/v/o of the 8 full-attention layers 4.0M);
   - + `in_proj_qkv`, `in_proj_z`, `out_proj`: **40.1M** (+11M); backward at 32K OK, 200/200 B grads.
   - Open: whether vLLM's Qwen3.5 can load LoRA on those modules (weight sync to inference). Test in the smoke run.
+  - **Decided (2026-11-17):** smoke test uses the 40.1M set (`configs/rl_smoke.toml`, `[trainer.model.lora]`).
 - **Image fixes needed to get here** (all in s11, each its own layer, sync layer stays cached):
   - `prime-kernels` wheel: the trainer imports it unconditionally, but it is only in the `kernels`
     extra (not in `all`; upstream's Dockerfile adds it);
@@ -472,6 +473,28 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - **Incidents:** vLLM's offline engine kept the process alive after finishing (H100 idle ~8 min, app
   stopped by hand); a bare `os._exit` then orphaned the engine subprocess holding ~68 GiB (gpu_memory_utilization 0.85), and the
   trainer OOMed at load. Fix: kill child processes before exiting, and print GPU memory before training.
+
+### 2026-11-17: smoke config written; `rl --dry-run` passes (`configs/rl_smoke.toml`, s11 `--which smoke --dry-run`)
+- `scripts/s14_trainable_registry.py` -> `registry-trainable.json` (dataset `kernelbook-trainable`, 138
+  tasks; asserts every task dir exists and is in the train split).
+- Config: 1 node, 2 H100 (1 vLLM + 1 trainer); vLLM `max_model_len` 32768 (default would be 262K);
+  agent as baseline/E0/check 2 (bash, 30 turns, T=1, 8192 tokens/turn, task timeouts kept, Modal
+  plugin); interception `server` + custom tunnel (s11 fills the `modal.forward` URL), 1 env worker;
+  `max_inflight` 32 episodes; `max_staleness` 1; LoRA r16/a32 with the linear-attention targets.
+- **`batch_size` counts samples (branches), not episodes.** With ~80% of episodes compacting into 2
+  samples, 56 samples ~= 8 tasks x 4 rollouts (32 would have been ~4-5 groups).
+- Dry run = parse + validate + resolve + write per-process configs, then exit (no GPU / model /
+  sandboxes). Resolved configs (Volume `checks/rl_smoke_dry/`) confirm:
+  - trainer: 10 LoRA targets, seq_len 32768, IPO loss (eps 0.3), AdamW, filesystem weight broadcast;
+  - inference: `enable_lora` true, `max_lora_rank` 16 (auto-set from the trainer's LoRA), 32K context;
+  - orchestrator: batch 56, group 4, staleness 1, renderer `qwen3.5`, GRPO token-mean, our taskset
+    + `modal_runtime.ModalBackend`, 30 turns.
+- **Not set by us, needs a decision: learning rate.** The trainer default is `lr = 1e-6` (sized for
+  full fine-tuning); LoRA usually needs ~10-50x more (prime-rl's own LoRA example uses 5e-5).
+  **Decided: `lr = 2e-5`** for the smoke run (`[trainer.optim]`).
+- **Prime platform monitor is on by default** (`monitors.prime` in trainer and orchestrator): a real
+  launch would register a run on Prime's platform. Turned off at launch (`--no-*.monitors.prime`);
+  metrics stay local in the file monitor (`metrics.jsonl` under the run dir).
 
 ## 4. Decisions (and why)
 
@@ -490,6 +513,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Lean prime-rl image (gpu + flash-attn extras), `uv sync --frozen` | Single node, 2 H100s needs no UCX/NIXL/EFA; `--frozen` = prime-rl's exact tested versions (`--locked` fails on its rolling cooldown) |
 | Modal sandboxes via our own verifiers runtime plugin (training) | prime-rl's verifiers dropped built-in Modal; a plugin keeps A10G + same images as baseline/E0 (comparability) |
 | Patch renderers' Qwen3.5 tool-arg `.strip()` in our image | Keeps tool arguments byte-identical to vLLM's qwen3_coder parser (baseline/E0); otherwise training-time edits lose indentation |
+| LoRA also on the linear-attention projections (`in_proj_qkv`, `in_proj_z`, `out_proj`) | Default targets leave attention in 24 of 32 layers frozen; +11M params (40.1M), trainer fits at 32K. Fallback to default if vLLM can't load LoRA on those modules |
 | Add `prime-kernels` + `flash_attn_3` (lockfile-pinned wheels) to the lean image | The trainer needs both on H100; same versions upstream's Dockerfile installs |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 

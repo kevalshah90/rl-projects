@@ -1,0 +1,75 @@
+# Training-loop smoke test: prime-rl `rl` launcher, Qwen3.5-9B + LoRA, one node with 2 H100s
+# (1 vLLM + 1 trainer), on the 138 trainable tasks (registry-trainable.json, s14).
+# Launch (s11 rewrites the Mac registry path and fills in the tunnel URL, see `rl_smoke`):
+#   uv run modal run --detach scripts/s11_prime_rl_image.py --which smoke [--dry-run]
+# Agent settings match baseline / E0 / check 2: bash harness, 30 turns, T = 1, 8192 tokens per
+# turn, 32K context, our Modal runtime plugin (A10G + task image per task, isolated grader).
+# Field names checked against prime-rl 389eacb configs.
+
+max_steps = 15
+seq_len = 32768                  # the served context; compaction keeps branches under ~16K
+
+[deployment]
+gpus_per_node = 2                # default 8; one train GPU + one inference GPU (the defaults)
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+[inference.vllm]
+max_model_len = 32768            # as s09_serve.py (eval); vLLM's default is the model's 262K
+
+# LoRA r16 / alpha 32. prime-rl's default targets skip the GatedDeltaNet (linear attention)
+# projections, i.e. attention in 24 of 32 layers (check 4). Add them: 29.1M -> 40.1M trainable;
+# trainer backward at 32K tokens OK (52.7 GiB). Open: vLLM must load the adapter on these modules
+# when weights sync to inference; if it can't, drop the last three entries (fallback = default).
+[trainer.model.lora]
+rank = 16
+alpha = 32.0
+target_modules = [
+  "q_proj", "k_proj", "v_proj", "o_proj",      # full attention (8 layers)
+  "gate_proj", "up_proj", "down_proj",         # MLPs (all 32 layers)
+  "in_proj_qkv", "in_proj_z", "out_proj",      # linear attention / GatedDeltaNet (24 layers)
+]
+# `rl` sets inference.vllm.enable_lora + max_lora_rank from this section (auto_setup_lora).
+
+[trainer.optim]
+lr = 2e-5                        # trainer default 1e-6 is sized for full fine-tuning; LoRA needs
+                                 # ~10-50x more (prime-rl's LoRA example: 5e-5). Mid value for 15 steps.
+
+[orchestrator]
+batch_size = 56                  # SAMPLES per step, not episodes: each branch is a sample and ~80%
+                                 # of episodes compact into 2 (check 3), so 56 ~= 8 tasks x 4 rollouts
+max_staleness = 1                # default 8; keep the smoke run close to on-policy
+
+[orchestrator.concurrency]
+max_inflight = 32                # episodes in flight; caps Modal sandboxes (2 per episode at grading)
+
+[orchestrator.train]
+group_size = 4                   # rollouts per task (GRPO group), as in the baseline
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 8192     # per turn, as baseline / E0 (`max_tokens`)
+
+[orchestrator.renderer]
+name = "qwen3.5"                 # explicit (auto resolves to the same; check 3). Our image patches
+                                 # its tool-argument .strip() bug.
+
+[[orchestrator.train.source]]
+name = "kernelbook"
+env.taskset.id = "kernelbook_taskset"
+env.taskset.registry_path = "work.nosync/tasks/registry-trainable.json"   # s11 swaps in container paths
+env.taskset.dataset = "kernelbook-trainable"
+env.taskset.ignore_timeouts = false        # keep task.toml's 900 s agent / 600 s grader limits
+env.agent.max_turns = 30
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "custom"
+env.agent.runtime.import_path = "modal_runtime.ModalBackend"
+# Sandboxes call the model through the interception server in the env worker; they reach it via
+# a modal.forward tunnel opened by s11 (same transport as check 2). One worker = one server/port.
+env.interception.type = "server"
+env.interception.tunnel.type = "custom"
+env.interception.tunnel.url = "__TUNNEL_URL__"                           # s11 fills this in
+env.interception.tunnel.port = 8765
+serve.pool.type = "static"
+serve.pool.num_workers = 1
