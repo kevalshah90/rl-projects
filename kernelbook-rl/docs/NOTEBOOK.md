@@ -554,6 +554,18 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   - Fix for the next run: `env.agent.harness.compaction.summarize_at_tokens = 16384` (pinned,
     same threshold). Not applied to the running smoke run.
 
+### 2026-11-18: smoke attempt 2 cancelled at 08:22 (client side); launch now uses `.spawn()`
+- Logs stop at 08:23:42 with every component healthy (step-2 batch at 7/16, vLLM serving,
+  sandboxes starting); no traceback, no final mirror. Modal app log: `08:22:46 Received a
+  cancellation signal while processing input ... Successfully canceled input`.
+- Cause: `smoke_run.remote()` ties the function call to the local `modal run` client. The Mac slept
+  and the client later died (`AuthError: Jwt is expired`); Modal treated that as a cancel of the
+  input. `--detach` keeps the app, not a `.remote()` call whose caller is gone.
+- Fix: the entrypoint `spawn()`s `smoke_run` and returns; nothing on the Mac must stay connected.
+- Proven before the cancel: step 1 end to end (rollouts -> trainer update, mismatch KL 0.0002,
+  53.5 GiB); episodes kept running after the trainer's v1 broadcast. Not yet proven: steps 2-5.
+- Relaunch also carries the compaction fix (`summarize_at_tokens = 16384`).
+
 ## 4. Decisions (and why)
 
 | Decision | Why |

@@ -438,7 +438,11 @@ def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
         if dry_run:
             smoke_dry_run.remote()
         else:
-            smoke_run.remote(args=args)
+            # spawn, not remote: a .remote() call stays tied to this local client, and when the
+            # client goes away (Mac sleep, expired token) Modal cancels the input, which killed
+            # smoke attempt 2 at 08:22. A spawned call runs to completion in the detached app.
+            call = smoke_run.spawn(args=args)
+            print(f"spawned smoke_run: function call {call.object_id}", flush=True)
         return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
