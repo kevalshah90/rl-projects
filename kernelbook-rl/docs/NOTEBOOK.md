@@ -501,6 +501,15 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   dir on local disk (vLLM reads weight broadcasts from it), logs/configs/metrics mirrored to the
   Volume `rl_smoke/` every minute (weights excluded); HF cache Volume for the model; 8 h timeout.
 
+### 2026-11-18: smoke launch stopped before start (GPU capacity question); docs updated
+- `--which smoke` launched (app `ap-RdYM1X7BjpI6ZC3MTIt3r1`); after ~10 min Modal had still not
+  scheduled the 2x H100 container (0 tasks, nothing billed). Stopped it.
+- Open question before relaunching: the Modal workspace GPU limit (10 GPUs in Oct; the reason the
+  baseline ran 4 episodes at once). The smoke config holds 2 H100 + up to 32 agent A10Gs + graders.
+  Either raise the limit or cap `max_inflight` (~3 at 10 GPUs, which makes 15 steps take many hours).
+- Architecture page (`docs/rl-architecture.html`) and README brought up to date (Modal-hosted
+  orchestrator, prime-rl stack, A10G, smoke config); pushed with the check 2-4 commits.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
