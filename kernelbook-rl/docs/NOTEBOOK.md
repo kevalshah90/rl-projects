@@ -435,6 +435,44 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   - consequences: ~1.8 samples per episode at our compaction rate; summary-writing is reinforced by
     the episode outcome; with token-mean loss, long (compacted) episodes contribute more tokens.
 
+### 2026-11-17: part 1, check 4: Qwen3.5-9B in prime-rl's trainer on one H100 (`scripts/s13_trainer_check.py`, s11 `--which trainer`)
+- **4a, driver vs CUDA 13:** Modal H100 has driver 610.57.04; torch 2.14.0+cu130 sees the GPU, bf16 matmul
+  runs, fla 0.6.0 + flash-attn 2.8.3 import. (The base image's "NVIDIA Driver was not detected" banner
+  is its entrypoint script failing to find `ldconfig`; harmless.)
+- **4b, the real trainer loop** (`torchrun -m prime_rl.trainer.rl.train @ configs/check4_trainer_fake.toml`):
+  LoRA r16/a32, fake data (random packed docs), 2 micro-batches x 32K tokens per step, 3 steps.
+  - step 1: 1m49s (compile); steps 2-3: **9.6 s/step, ~6,800 tok/s, MFU ~23%, peak 56.2 GiB of 80**.
+  - Mismatch KL 12 / grad norm 0 in that log are artifacts: the fake loader's "vLLM logprobs" are
+    random, so the IPO mask drops nearly every token. Gradient flow is checked in 4c on real data.
+- **4c, the engine-mismatch gap, measured.** vLLM 0.33 (prime-rl's pin) sampled at T=1 from the 76
+  distinct assistant-turn prompts of the e2e run (rendered by `Qwen35Renderer`, 876-15,807 tokens):
+  36,331 sampled tokens with their decode-path logprobs. prime-rl's model stack (`setup_model`: FSDP,
+  AC, compile, LoRA with B=0, i.e. the base policy) scored the same tokens.
+  - log p_train - log p_vllm: mean -0.00055, mean |.| 0.0073, p99 |.| 0.116, max |.| 0.378;
+  - **mismatch KL (prime-rl's metric) 0.00029; IPO-masked (|dp| > 0.3): 0 of 36,331 tokens**;
+  - by context position: 0-8K 0.00032, 8-16K 0.00023 (no growth with length; none past 16K here,
+    since compaction keeps contexts under ~16K);
+  - vLLM loads the GDN `linear_attn.norm` weights (fp32 in the checkpoint) as bf16; the trainer
+    keeps fp32 master weights. This is one known contributor; the total gap is still tiny.
+  - Read: at step 0 the only off-policy source is the engines, and it is ~0. Any masked fraction
+    or mismatch KL seen in training is staleness / policy change, not numerics.
+- **Backward on real data:** 16K-token sequence: grads reach 128/128 `lora_B` (A has zero grad at
+  step 0 by design, since B = 0), peak 44.6 GiB. Fresh model at 32K tokens: 52.7 GiB.
+- **LoRA targets (decision pending):** prime-rl's default targets skip the GatedDeltaNet (linear
+  attention) projections, i.e. attention in 24 of 32 layers:
+  - default: **29.1M** trainable (MLPs 25.2M; q/k/v/o of the 8 full-attention layers 4.0M);
+  - + `in_proj_qkv`, `in_proj_z`, `out_proj`: **40.1M** (+11M); backward at 32K OK, 200/200 B grads.
+  - Open: whether vLLM's Qwen3.5 can load LoRA on those modules (weight sync to inference). Test in the smoke run.
+- **Image fixes needed to get here** (all in s11, each its own layer, sync layer stays cached):
+  - `prime-kernels` wheel: the trainer imports it unconditionally, but it is only in the `kernels`
+    extra (not in `all`; upstream's Dockerfile adds it);
+  - `flash_attn_3` wheel (pinned with hash from uv.lock): `attn = "auto"` picks FA3 on Hopper and
+    refuses to start without it;
+  - standalone trainer needs `--no-monitors.prime` (it otherwise logs to the `rl` launcher's run).
+- **Incidents:** vLLM's offline engine kept the process alive after finishing (H100 idle ~8 min, app
+  stopped by hand); a bare `os._exit` then orphaned the engine subprocess holding ~68 GiB (gpu_memory_utilization 0.85), and the
+  trainer OOMed at load. Fix: kill child processes before exiting, and print GPU memory before training.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -452,6 +490,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Lean prime-rl image (gpu + flash-attn extras), `uv sync --frozen` | Single node, 2 H100s needs no UCX/NIXL/EFA; `--frozen` = prime-rl's exact tested versions (`--locked` fails on its rolling cooldown) |
 | Modal sandboxes via our own verifiers runtime plugin (training) | prime-rl's verifiers dropped built-in Modal; a plugin keeps A10G + same images as baseline/E0 (comparability) |
 | Patch renderers' Qwen3.5 tool-arg `.strip()` in our image | Keeps tool arguments byte-identical to vLLM's qwen3_coder parser (baseline/E0); otherwise training-time edits lose indentation |
+| Add `prime-kernels` + `flash_attn_3` (lockfile-pinned wheels) to the lean image | The trainer needs both on H100; same versions upstream's Dockerfile installs |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up
@@ -488,3 +527,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 5. Training-loop smoke test on the 138 trainable tasks (~10-20 steps). Log: IPO-masked fraction,
    mean |ratio - 1|, staleness histogram, mismatch KL(mu || pi_theta), entropy, per-turn policy version.
 6. First real training run; dev eval after (same config); compare with E0.
+   - Comparison: only the weights may differ from E0. Plan: merge the LoRA adapter into the base
+     weights, serve with `s09_serve.py`, rerun `configs/eval_dev.toml` unchanged (old stack, like
+     E0); or rerun E0 on the new stack as the control. Report dev pass@1/pass@4 (headline), the
+     train reward curve vs the train baseline, and turns, compaction rate and tool errors per episode.

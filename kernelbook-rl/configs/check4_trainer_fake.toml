@@ -1,0 +1,22 @@
+# Check 4b: prime-rl's real trainer loop (optimizer, FSDP, activation checkpointing, compile)
+# on Qwen3.5-9B with LoRA, fed random token sequences instead of rollouts (no vLLM, no envs).
+# Measures step time and peak memory at our full context (32K). Launched by s11 --which trainer:
+#   torchrun --nproc-per-node 1 -m prime_rl.trainer.rl.train @ configs/check4_trainer_fake.toml
+
+max_steps = 3
+output_dir = "/tmp/check4_fake"
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+seq_len = 32768               # one packed micro-batch = 32K tokens, our longest episodes
+
+[model.lora]
+rank = 16
+alpha = 32.0
+
+[data.fake]
+batch_size = 2                # 2 micro-batches of 32K tokens per step
+generate_samples = true       # packed docs of random lengths, like real packed rollouts
+
+[optim]
+lr = 1e-5

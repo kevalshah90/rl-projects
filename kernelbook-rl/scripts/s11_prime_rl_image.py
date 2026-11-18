@@ -57,6 +57,22 @@ image = (
     .run_commands(
         f"uv pip install --python {VENV}/bin/python modal==1.6.1 pytest pytest-asyncio pytest-timeout",
     )
+    # prime-kernels: the trainer imports it unconditionally (trainer/distributed/collectives.py),
+    # but it sits in the `kernels` extra, which `all` leaves out (upstream's Dockerfile adds it).
+    # Exact wheel pinned in uv.lock; its own layer so the sync layer above stays cached.
+    .run_commands(
+        f"uv pip install --python {VENV}/bin/python --no-deps "
+        "'prime-kernels @ https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/"
+        "v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl'",
+    )
+    # FlashAttention 3: the trainer's attn="auto" picks FA3 on Hopper (H100) and refuses to start
+    # without it. Prebuilt wheel from PyTorch's cu130 index, as pinned (with hash) in uv.lock.
+    .run_commands(
+        f"uv pip install --python {VENV}/bin/python --no-deps "
+        "'flash_attn_3 @ https://download.pytorch.org/whl/test/cu130/"
+        "flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl"
+        "#sha256=44a019ca428d0866fc73ca49b8af02eb4b6a37ae8a1a6b1a07917c383a187fe6'",
+    )
     # Local patch to prime-rl's pinned renderers (a9d1676; unchanged on upstream main 9f4943f).
     # Its Qwen3.5 tool-call parser strips ALL leading/trailing whitespace from every parameter
     # value (`pm.group(2).strip()`), on top of the regex already removing the template's one
@@ -81,6 +97,7 @@ image = (
     .add_local_file(PROJECT / "kernelbook_taskset.py", f"{KB}/kernelbook_taskset.py")
     .add_local_file(PROJECT / "modal_runtime.py", f"{KB}/modal_runtime.py")
     .add_local_file(PROJECT / "scripts/s12_renderer_check.py", f"{KB}/scripts/s12_renderer_check.py")
+    .add_local_file(PROJECT / "scripts/s13_trainer_check.py", f"{KB}/scripts/s13_trainer_check.py")
     .add_local_dir(PROJECT / "configs", f"{KB}/configs", ignore=_skip)
     .add_local_dir(PROJECT / "work.nosync/tasks", f"{KB}/work.nosync/tasks", ignore=_skip)
 )
@@ -273,10 +290,57 @@ def check_renderer(run: str = "e2e_prime_rl/kernelbook_taskset--qwen--qwen3.5-9b
     print(f"-> exit {code}", flush=True)
 
 
+hf_cache = modal.Volume.from_name("kernelbook-hf-cache", create_if_missing=True)   # s09's weights
+
+
+@app.function(gpu="H100", cpu=8, memory=65536, timeout=90 * 60,
+              volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache})
+def check_trainer(run: str = "e2e_prime_rl/kernelbook_taskset--qwen--qwen3.5-9b--bash--960c9af1",
+                  parts: str = "abc") -> None:
+    """Check 4 on one H100: (a) driver vs CUDA 13, (b) prime-rl's trainer loop on fake data,
+    (c) vLLM vs trainer logprobs on real prompts (scripts/s13_trainer_check.py)."""
+    import subprocess
+
+    def sh(cmd: str) -> int:
+        print(f"\n$ {cmd}", flush=True)
+        code = subprocess.run(cmd, shell=True, cwd=KB).returncode
+        print(f"-> exit {code}", flush=True)
+        return code
+
+    if "a" in parts:
+        sh("nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv")
+        sh("python -c \"import torch; print('torch', torch.__version__, '| built for CUDA', "
+           "torch.version.cuda, '| available', torch.cuda.is_available()); "
+           "x = torch.randn(4096, 4096, device='cuda', dtype=torch.bfloat16); "
+           "print('bf16 matmul ok:', (x @ x).float().norm().item() > 0)\"")
+        sh("python -c \"import fla, flash_attn; print('fla', fla.__version__, '| flash_attn', "
+           "flash_attn.__version__)\"")
+    tr = "torchrun --nproc-per-node 1 --master-port 29511"
+    if "b" in parts:
+        sh(f"{tr} -m prime_rl.trainer.rl.train @ configs/check4_trainer_fake.toml "
+           "--no-monitors.prime 2>&1 | "   # standalone trainer: no `rl` launcher run to log to
+           "grep -v -i 'warn' | tail -40")
+    data = "/runs/checks/check4_vllm_samples.json"
+    if "c" in parts:   # c = sample with vLLM, then score with the trainer
+        Path("/runs/checks").mkdir(parents=True, exist_ok=True)
+        if sh(f"python scripts/s13_trainer_check.py vllm --traces /runs/{run}/traces.jsonl "
+              f"--out {data}") != 0:
+            return
+        runs.commit()
+    if "c" in parts or "t" in parts:   # t = trainer only, reusing the saved vLLM samples
+        sh("nvidia-smi --query-gpu=memory.used --format=csv")   # must be ~0 before training
+        sh(f"{tr} scripts/s13_trainer_check.py trainer --data {data}")
+        sh(f"{tr} scripts/s13_trainer_check.py trainer --gdn-lora")   # params + backward only
+    hf_cache.commit()
+
+
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
+        return
+    if which == "trainer":
+        check_trainer.remote(parts=args or "abc")
         return
     {"image": check, "taskset": check_taskset, "runtime": check_runtime,
      "renderer": check_renderer}[which].remote()
