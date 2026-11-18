@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;1,400&display=swap">
 <style>
-/* Layout: one wide blueprint diagram (Mac | tunnel | Modal) driven by a phase stepper, then the async timeline, then the RL glossary. */
+/* Layout: one wide blueprint diagram (rl container | tunnel | Modal GPUs + sandboxes) driven by a phase stepper, then the async timeline, then the RL glossary. */
 :root {
   --bg: #f3f5f2;          /* drafting paper, faint green */
   --panel: #ffffff;
@@ -11,7 +11,7 @@
   --muted: #56666f;
   --line: #a9b6bb;
   --faint: #dde3e1;
-  --mac-tint: #e6edf6;    /* Mac zone */
+  --mac-tint: #e6edf6;    /* rl-container zone (was the Mac) */
   --modal-tint: #e5f0ea;  /* Modal zone */
   --tunnel: #efe2c8;      /* tunnel band */
   --accent: #b5600f;      /* active outline */
@@ -168,8 +168,8 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
       <span><i class="sw" style="background:var(--c-file)"></i>files</span>
       <span><i class="sw" style="background:var(--c-rew)"></i>reward</span>
       <span><i class="sw" style="background:var(--c-w)"></i>weights</span>
-      <span><i class="sw-line"></i>built (steps 0–10)</span>
-      <span><i class="sw-dash"></i>planned (steps 11–13)</span>
+      <span><i class="sw-line"></i>built and run</span>
+      <span><i class="sw-dash"></i>verified (checks 1–4), smoke run pending</span>
     </div>
   </header>
 
@@ -189,24 +189,24 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
     <div class="edit-status" id="edit-status" hidden></div>
 
     <div class="diagram-scroll">
-<svg id="arch" viewBox="0 0 1280 840" role="img" aria-label="Architecture: Mac orchestrator and interception server, Prime tunnel, Modal policy server, agent and grader sandboxes, GRPO learner and trainer">
+<svg id="arch" viewBox="0 0 1280 840" role="img" aria-label="Architecture: prime-rl container on Modal (orchestrator, env worker with interception server, vLLM and trainer on one H100 each), modal.forward tunnel, agent and grader sandboxes, GRPO learner">
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker>
   </defs>
 
   <!-- zones -->
   <rect class="zone-mac" x="16" y="16" width="318" height="808" rx="12"/>
-  <text class="zone-label" x="32" y="42">Your Mac</text>
-  <text class="zone-sub" x="32" y="60">orchestrates every run today (step 9)</text>
+  <text class="zone-label" x="32" y="42">rl container · Modal</text>
+  <text class="zone-sub" x="32" y="60">CPU side of the 2× H100 box (no laptop)</text>
 
   <rect class="zone-tunnel" x="340" y="16" width="84" height="808" rx="12"/>
-  <text class="zone-label" x="382" y="42" text-anchor="middle">Prime</text>
-  <text class="zone-label" x="382" y="58" text-anchor="middle">tunnel</text>
+  <text class="zone-label" x="382" y="42" text-anchor="middle">modal</text>
+  <text class="zone-label" x="382" y="58" text-anchor="middle">.forward</text>
   <text class="t-mono-dim" x="382" y="76" text-anchor="middle">HTTPS</text>
 
   <rect class="zone-modal" x="430" y="16" width="836" height="808" rx="12"/>
-  <text class="zone-label" x="446" y="42">Modal · cloud GPUs</text>
-  <text class="zone-sub" x="446" y="60">account limit 10 GPUs → 4 rollouts at once</text>
+  <text class="zone-label" x="446" y="42">Modal · GPUs and sandboxes</text>
+  <text class="zone-sub" x="446" y="60">vLLM + trainer share the rl container · sandboxes are separate</text>
 
   <!-- connectors (also the animation paths) -->
   <path id="p-req"  class="conn" d="M450 382 H320" marker-end="url(#ah)"/>
@@ -226,44 +226,44 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <text class="t-mono-dim" x="735" y="579" text-anchor="middle">reward.json back to the orchestrator</text>
   <text class="t-mono-dim" x="830" y="164" text-anchor="middle">weight sync</text>
 
-  <!-- Mac: orchestrator -->
+  <!-- rl container: orchestrator -->
   <g id="orch" class="box">
     <rect class="frame" x="30" y="80" width="290" height="160" rx="8"/>
     <text class="t-term" x="44" y="100">ORCHESTRATOR</text>
-    <text class="t-name" x="44" y="120">vf-eval today · prime-rl later</text>
-    <text class="t-line" x="44" y="142">samples tasks from registry-train.json</text>
-    <text class="t-line" x="44" y="160">each task → a GROUP of G = 4 rollouts</text>
-    <text class="t-line" x="44" y="178">≤ 4 rollouts in flight (max_concurrent)</text>
+    <text class="t-name" x="44" y="120">prime-rl orchestrator · vf-eval for evals</text>
+    <text class="t-line" x="44" y="142">samples from registry-trainable (138)</text>
+    <text class="t-line" x="44" y="160">each task → GROUP of G = 4 · 56 samples/step</text>
+    <text class="t-line" x="44" y="178">renderer qwen3.5: messages ↔ token ids</text>
     <text class="t-mono" x="44" y="204">policy version <tspan id="pv-orch">v7</tspan></text>
-    <text class="t-mono-dim" x="44" y="224">async: use rollouts ≤ 4 versions old</text>
+    <text class="t-mono-dim" x="44" y="224">async: tokens ≤ 1 version stale (smoke)</text>
   </g>
 
-  <!-- Mac: interception -->
+  <!-- rl container: interception (env worker) -->
   <g id="intercept" class="box">
     <rect class="frame" x="30" y="262" width="290" height="140" rx="8"/>
     <text class="t-term" x="44" y="282">INTERCEPTION SERVER</text>
-    <text class="t-name" x="44" y="302">127.0.0.1 on the Mac</text>
+    <text class="t-name" x="44" y="302">in the env worker · port 8765</text>
     <text class="t-line" x="44" y="324">every model call passes through here</text>
     <text class="t-line" x="44" y="342">records token ids + logprobs (TITO)</text>
     <text class="t-line" x="44" y="360">forwards the call to the policy server</text>
-    <text class="t-mono-dim" x="44" y="386">one server, 32 rollouts per tunnel</text>
+    <text class="t-mono-dim" x="44" y="386">one server · reached via modal.forward</text>
   </g>
 
-  <!-- Mac: traces -->
+  <!-- rl container: trajectories -->
   <g id="traces" class="box">
     <rect class="frame" x="30" y="424" width="290" height="146" rx="8"/>
     <text class="t-term" x="44" y="444">TRAJECTORIES</text>
     <text class="t-name" x="44" y="464">traces.jsonl</text>
     <text class="t-line" x="44" y="486">messages · token_ids · mask</text>
     <text class="t-line" x="44" y="504">logprobs · reward · 7 gate metrics</text>
-    <text class="t-line" x="44" y="522">one line per rollout</text>
+    <text class="t-line" x="44" y="522">1 training sample per branch (compaction → 2)</text>
     <text class="t-mono" x="44" y="552">rollouts recorded: <tspan id="ep-count">0</tspan></text>
   </g>
 
-  <!-- Mac: why the tunnel -->
+  <!-- rl container: why the tunnel -->
   <foreignObject class="note-fo" x="30" y="592" width="290" height="222">
     <div xmlns="http://www.w3.org/1999/xhtml">
-      <b>Why a tunnel?</b> The agent sandbox has its internet off except for one allowed domain. The interception server runs on the Mac at 127.0.0.1, which no cloud machine can reach. The Prime tunnel gives it a public HTTPS address, and verifiers allowlists exactly that domain. Because every model call passes through it, the trace holds the exact tokens and logprobs the policy sampled, which is what the trainer needs. <span class="k">Needs PRIME_API_KEY.</span>
+      <b>Why a tunnel?</b> The agent sandbox has its internet off except for one allowed domain. The interception server runs inside the rl container, which sandboxes cannot reach directly. <code>modal.forward</code> gives its port a public HTTPS address, and verifiers allowlists exactly that domain. Every model call passes through it, so the trace holds the exact tokens and logprobs the policy sampled. Until 11-13 this ran on the Mac behind Prime's tunnel; moving it into Modal took the laptop out of the loop.
     </div>
   </foreignObject>
 
@@ -271,24 +271,24 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <g id="vllm" class="box">
     <rect class="frame" x="450" y="80" width="310" height="160" rx="8"/>
     <text class="t-term" x="464" y="100">POLICY π_θ · INFERENCE</text>
-    <text class="t-name" x="464" y="120">vLLM server · 1× H100</text>
+    <text class="t-name" x="464" y="120">vLLM 0.33 · 1× H100 (rl container)</text>
     <text class="t-line" x="464" y="142">Qwen3.5-9B, temperature 1.0</text>
     <text class="t-line" x="464" y="160">samples actions: thinking + tool call</text>
     <text class="t-line" x="464" y="178">returns token ids + logprobs</text>
     <text class="t-mono" x="464" y="204">weights <tspan id="pv-vllm">θ_v7</tspan></text>
-    <text class="t-mono-dim" x="464" y="224">scales to zero after 10 idle min</text>
+    <text class="t-mono-dim" x="464" y="224">+ LoRA adapter, reloaded every step</text>
   </g>
 
   <!-- Modal: trainer -->
   <g id="trainer" class="box planned">
     <rect class="frame" x="900" y="80" width="340" height="160" rx="8"/>
     <text class="t-term" x="914" y="100">TRAINER · LEARNER</text>
-    <text class="t-name" x="914" y="120">PyTorch, own H100 in prime-rl</text>
+    <text class="t-name" x="914" y="120">prime-rl trainer · 1× H100</text>
     <text class="t-line" x="914" y="142">recomputes logprobs under current θ</text>
-    <text class="t-line" x="914" y="160">clipped GRPO loss → backward → optimizer</text>
-    <text class="t-line" x="914" y="178">C1: shares one H100, vLLM sleeps</text>
+    <text class="t-line" x="914" y="160">IPO loss → backward → AdamW (lr 2e-5)</text>
+    <text class="t-line" x="914" y="178">LoRA r16: 40.1M params, incl. linear attn</text>
     <text class="t-mono" x="914" y="204">step <tspan id="tr-step">7</tspan> · produces <tspan id="tr-next">θ_v8</tspan></text>
-    <text class="t-tag" x="914" y="224">planned · steps 11–13</text>
+    <text class="t-tag" x="914" y="224">verified (check 4) · smoke run next</text>
   </g>
 
   <!-- Modal: agent sandbox (with ghosts for parallel rollouts) -->
@@ -297,8 +297,8 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <g id="agent" class="box">
     <rect class="frame" x="450" y="280" width="390" height="280" rx="8"/>
     <text class="t-term" x="464" y="300">ENVIRONMENT · AGENT SANDBOX</text>
-    <text class="t-mono-dim" x="828" y="300" text-anchor="end">×4 in parallel</text>
-    <text class="t-name" x="464" y="320">Modal L4 · one per rollout</text>
+    <text class="t-mono-dim" x="828" y="300" text-anchor="end">one per rollout</text>
+    <text class="t-name" x="464" y="320">Modal A10G · our runtime plugin</text>
     <text class="t-mono-dim" x="828" y="320" text-anchor="end">image kernel-env-base</text>
 
     <g id="files-agent">
@@ -333,7 +333,7 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <g id="grader" class="box">
     <rect class="frame" x="880" y="280" width="360" height="280" rx="8"/>
     <text class="t-term" x="894" y="300">REWARD · VERIFIER</text>
-    <text class="t-name" x="894" y="320">Grader sandbox · fresh L4</text>
+    <text class="t-name" x="894" y="320">Grader sandbox · fresh A10G</text>
     <g class="file-row" id="g-tests">
       <text class="t-mono" x="894" y="346" font-weight="600">/tests/</text>
       <text class="t-mono-dim" x="950" y="346">staged only here</text>
@@ -365,7 +365,7 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <g id="learner" class="box planned">
     <rect class="frame" x="450" y="600" width="790" height="210" rx="8"/>
     <text class="t-term" x="464" y="620">LEARNER · ONE GRPO TRAINING STEP</text>
-    <text class="t-mono-dim" x="1228" y="620" text-anchor="end">math built in step 10 (grpo.py) · loop planned</text>
+    <text class="t-mono-dim" x="1228" y="620" text-anchor="end">prime-rl trainer (smoke config) · from-scratch version: rl_scratch/grpo.py</text>
   </g>
   <g id="b-group" class="box">
     <rect class="frame" x="462" y="636" width="178" height="160" rx="6"/>
@@ -388,11 +388,11 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
   <g id="b-loss" class="box">
     <rect class="frame" x="850" y="636" width="186" height="160" rx="6"/>
     <text class="t-term" x="862" y="656">3 · POLICY LOSS</text>
-    <text class="t-mono" x="862" y="678">ratio = π_new / π_old</text>
-    <text class="t-mono" x="862" y="698">clip to [0.8, 1.28]</text>
-    <text class="t-line" x="862" y="720">pessimistic min · no critic</text>
-    <text class="t-line" x="862" y="738">agg = prompt: token-mean</text>
-    <text class="t-line" x="862" y="756">per task, then mean</text>
+    <text class="t-mono" x="862" y="678">ratio = π_θ / μ_vLLM</text>
+    <text class="t-mono" x="862" y="698">IPO: mask |Δp| &gt; 0.3</text>
+    <text class="t-line" x="862" y="720">no critic · no KL (β = 0)</text>
+    <text class="t-line" x="862" y="738">token-mean over batch</text>
+    <text class="t-line" x="862" y="756">(grpo.py: clip, per task)</text>
   </g>
   <g id="b-opt" class="box">
     <rect class="frame" x="1048" y="636" width="180" height="160" rx="6"/>
@@ -401,7 +401,7 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
     <text class="t-line" x="1060" y="694">clip grad norm 1.0</text>
     <text class="t-line" x="1060" y="712">optimizer.step()</text>
     <text class="t-mono" x="1060" y="738" id="opt-v">θ_v7 → θ_v8</text>
-    <text class="t-mono-dim" x="1060" y="760">then sync to vLLM</text>
+    <text class="t-mono-dim" x="1060" y="760">then LoRA → vLLM</text>
   </g>
   <path class="conn" d="M640 716 H652" marker-end="url(#ah)"/>
   <path class="conn" d="M838 716 H850" marker-end="url(#ah)"/>
@@ -429,12 +429,12 @@ body.editing text[data-ed]:hover { fill: var(--accent); }
 each task × 4 rollouts (num_rollouts)                   =  120 episodes
 each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
               → fresh grader sandbox → reward 0 or 1</pre>
-    <p>Run with <code>vf-eval @ configs/baseline_train.toml -n 30</code>, summarized by <code>s09_baseline.py</code>. Train only: dev stays held out for evaluation.</p>
+    <p>Run with <code>vf-eval @ configs/baseline_train.toml</code> in three batches covering all 382 train tasks (20.0% pass@1, 41.4% pass@4), summarized by <code>s09_baseline.py</code>: <b>138 trainable tasks</b> (<code>registry-trainable.json</code>, the RL training set). Dev (54 tasks) stays held out: E0 = 21.9% pass@1 / 42.6% pass@4, the before-number for the trained model.</p>
   </section>
 
   <section class="panel" aria-labelledby="async-h">
     <h2 id="async-h">Async training: rollouts and training overlap</h2>
-    <p>In synchronous training, rollouts stop while the trainer steps. In <b>async</b> training (prime-rl), the policy server keeps sampling rollouts with the weights it has while the trainer computes the next ones. A batch can therefore be a few versions behind the trainer: it is <b>off-policy</b>. prime-rl drops rollouts older than <code>max_off_policy_steps = 4</code>, and the importance ratio in the loss corrects for the gap that remains.</p>
+    <p>In synchronous training, rollouts stop while the trainer steps. In <b>async</b> training (prime-rl), the policy server keeps sampling rollouts with the weights it has while the trainer computes the next ones. A batch can therefore be a few versions behind the trainer: it is <b>off-policy</b>. prime-rl masks tokens sampled more than <code>max_staleness</code> versions ago (default 8; <b>1</b> in our smoke run), and the importance ratio against vLLM's own logprobs corrects for the gap that remains. Check 4 measured the other source of mismatch, vLLM vs trainer numerics: mismatch KL 0.0003, 0 of 36,331 tokens past the IPO mask.</p>
     <div class="timeline-scroll">
 <svg viewBox="0 0 1200 210" role="img" aria-label="Timeline: inference keeps producing rollout batches at policy versions v5 to v9 while the trainer produces v6 to v10; each trainer step consumes a batch made by an older version">
   <text class="tl-lane" x="12" y="62">Inference</text>
@@ -461,8 +461,8 @@ each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
 </svg>
     </div>
     <div class="two-col">
-      <div><h4>C1, our own loop (step 11)</h4><p>Synchronous, one H100: vLLM samples a batch, then sleeps and frees its memory, the trainer steps, the new weights are copied into vLLM, and it wakes. Every rollout is on-policy. Single-turn: one answer per task, no <code>check</code> tool.</p></div>
-      <div><h4>C2, prime-rl (steps 12–13)</h4><p>Async on two H100s, inference on one and the trainer on the other, with the orchestrator in the same Modal container. Multi-turn with the <code>check</code> tool, exactly the episode shown above. The interception server moves into Modal with the orchestrator; sandboxes still reach it through a tunnel.</p></div>
+      <div><h4>C1, our own loop (planned)</h4><p>Synchronous, one H100: vLLM samples a batch, then sleeps and frees its memory, the trainer steps, the new weights are copied into vLLM, and it wakes. Every rollout is on-policy. Single-turn: one answer per task, no <code>check</code> tool. GRPO math in <code>rl_scratch/grpo.py</code>.</p></div>
+      <div><h4>C2, prime-rl (verified; smoke run next)</h4><p>Async on two H100s in one Modal container: vLLM on one, the trainer on the other, plus the orchestrator and env worker. Multi-turn with the <code>check</code> tool, exactly the episode shown above. Checks 1–4 passed (image, taskset + Modal plugin end to end, renderer, trainer); config <code>configs/rl_smoke.toml</code>, launched by <code>s11 --which smoke</code>.</p></div>
     </div>
   </section>
 
@@ -473,31 +473,31 @@ each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
         <thead><tr><th>Term</th><th>In this project</th><th>Where it lives</th><th>Status</th></tr></thead>
         <tbody>
           <tr><td class="term">policy π_θ</td><td>The model whose weights θ we train: Qwen3.5-9B. It maps the conversation so far to the next action.</td><td class="where">vLLM on a Modal H100</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">environment</td><td>One Harbor task in its sandbox: <code>reference.py</code>, the tools, and the rules in <code>task.toml</code>.</td><td class="where">agent sandbox, Modal L4</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">environment</td><td>One Harbor task in its sandbox: <code>reference.py</code>, the tools, and the rules in <code>task.toml</code>.</td><td class="where">agent sandbox, Modal A10G</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">rollout / episode</td><td>One complete attempt at one task: up to 30 turns, ending with a graded <code>solution.py</code>.</td><td class="where">agent sandbox</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">turn</td><td>One model reply (thinking + a tool call) followed by the tool's result.</td><td class="where">bash harness</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">action / observation</td><td>Action: the tool call (<code>bash</code>, <code>edit</code>, <code>kernel-tools_check</code>). Observation: what the tool returned, e.g. <code>failed_gate: "runs"</code>.</td><td class="where">harness + MCP server</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">trajectory</td><td>The rollout as data: messages, token ids, a mask of which tokens the policy sampled, their logprobs, and the reward. The prompt and tool results are in it but masked, so the trainer learns only from the policy's own tokens.</td><td class="where">traces.jsonl (Mac)</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">trajectory</td><td>The rollout as data: messages, token ids, a mask of which tokens the policy sampled, their logprobs, and the reward. The prompt and tool results are in it but masked, so the trainer learns only from the policy's own tokens.</td><td class="where">traces.jsonl (eval) · training samples (prime-rl)</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">messages · context</td><td>The conversation the harness keeps: system, user (the instruction), then an assistant reply and a tool result per turn. Sent whole on every turn; compacted into a summary when about 16K tokens of context are left.</td><td class="where">bash harness, agent sandbox</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">reward</td><td>1 if all 7 grader gates pass, else 0. Computed by code, no LLM judge.</td><td class="where">grader sandbox → reward.json</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">verifier</td><td>Harbor's name for the grader: <code>tests/test.sh</code> run in a fresh sandbox that only receives <code>solution.py</code>.</td><td class="where">grader sandbox, Modal L4</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">verifier</td><td>Harbor's name for the grader: <code>tests/test.sh</code> run in a fresh sandbox that only receives <code>solution.py</code>.</td><td class="where">grader sandbox, Modal A10G</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">logprobs · TITO</td><td>Log-probability of each sampled token, recorded at sampling time with the exact token ids ("tokens in, tokens out"), so the trainer never re-tokenizes text.</td><td class="where">interception server</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">group · G</td><td>G = 4 rollouts of the same task. GRPO compares rollouts within a group instead of using a value model.</td><td class="where">orchestrator</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">pass rate · trainable</td><td>p = passes / attempts per task. Only 0 &lt; p &lt; 1 tasks give GRPO a signal (<code>splits/trainable.txt</code>).</td><td class="where">s09_baseline.py</td><td><span class="status built">built</span></td></tr>
           <tr><td class="term">advantage Â</td><td>Reward minus the group's mean reward (Dr. GRPO, no division by std): how much better this rollout did than its siblings.</td><td class="where">rl_scratch/grpo.py</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">GRPO</td><td>Group Relative Policy Optimization: PPO-style clipped updates with group-relative advantages and no critic.</td><td class="where">grpo.py + trainer</td><td><span class="status">math built</span></td></tr>
-          <tr><td class="term">importance ratio · clip</td><td>exp(new logprob − old logprob) per token, clipped to [0.8, 1.28] (DAPO's clip-higher), so one update can't move a token too far.</td><td class="where">policy_loss()</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">loss aggregation</td><td>How token losses are averaged: <code>token</code>, <code>sequence</code>, or <code>prompt</code> (token-mean per task, then mean over tasks; our choice).</td><td class="where">policy_loss()</td><td><span class="status built">built</span></td></tr>
-          <tr><td class="term">trainer · learner</td><td>Recomputes logprobs under the current weights, computes the loss, runs backward and the optimizer.</td><td class="where">Modal H100</td><td><span class="status">planned</span></td></tr>
-          <tr><td class="term">weight update · sync</td><td>The optimizer step that turns θ_v into θ_v+1, then copying the new weights into vLLM so new rollouts use them.</td><td class="where">trainer → vLLM</td><td><span class="status">planned</span></td></tr>
-          <tr><td class="term">orchestrator</td><td>Schedules rollouts, collects trajectories, computes advantages and packs training batches.</td><td class="where">vf-eval on the Mac now; prime-rl later</td><td><span class="status">partly built</span></td></tr>
-          <tr><td class="term">async · off-policy</td><td>Rollouts keep being sampled with older weights while the trainer steps; rollouts more than 4 versions old are dropped.</td><td class="where">prime-rl</td><td><span class="status">planned</span></td></tr>
+          <tr><td class="term">GRPO</td><td>Group Relative Policy Optimization: PPO-style clipped updates with group-relative advantages and no critic.</td><td class="where">prime-rl (+ grpo.py from scratch)</td><td><span class="status built">verified</span></td></tr>
+          <tr><td class="term">importance ratio · clip</td><td>exp(trainer logprob − vLLM logprob) per token. prime-rl's IPO loss masks tokens whose probability moved more than 0.3; our grpo.py clips the ratio to [0.8, 1.28] (DAPO's clip-higher) instead.</td><td class="where">prime-rl loss · policy_loss()</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">loss aggregation</td><td>How token losses are averaged: <code>token</code>, <code>sequence</code>, or <code>prompt</code> (token-mean per task, then mean over tasks). prime-rl default: <code>token</code> (smoke run); grpo.py: <code>prompt</code>.</td><td class="where">prime-rl · policy_loss()</td><td><span class="status built">built</span></td></tr>
+          <tr><td class="term">trainer · learner</td><td>Recomputes logprobs under the current weights, computes the loss, runs backward and the optimizer.</td><td class="where">prime-rl trainer, Modal H100 (LoRA r16)</td><td><span class="status built">verified</span></td></tr>
+          <tr><td class="term">weight update · sync</td><td>The optimizer step that turns θ_v into θ_v+1, then copying the new weights into vLLM so new rollouts use them.</td><td class="where">trainer → vLLM (LoRA files)</td><td><span class="status">smoke run</span></td></tr>
+          <tr><td class="term">orchestrator</td><td>Schedules rollouts, collects trajectories, computes advantages and packs training batches.</td><td class="where">prime-rl orchestrator (training) · vf-eval (evals), both on Modal</td><td><span class="status built">verified</span></td></tr>
+          <tr><td class="term">async · off-policy</td><td>Rollouts keep being sampled with older weights while the trainer steps; tokens more than <code>max_staleness</code> versions old (1 in the smoke run) are masked out of the loss.</td><td class="where">prime-rl</td><td><span class="status">smoke run</span></td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <footer>Numbers come from the project's runs: 436 validated tasks (train 382 / dev 54); Qwen3.5-9B passed 3 of 8 attempts on 4 train tasks, with one task at p = 0.5. The rewards [1, 0, 0, 1] and versions v7 → v8 in the animation are illustrative.</footer>
+  <footer>Numbers come from the project's runs: 436 validated tasks (train 382 / dev 54); train baseline 20.0% pass@1 / 41.4% pass@4 with 138 trainable tasks; dev E0 21.9% / 42.6%. The rewards [1, 0, 0, 1] and versions v7 → v8 in the animation are illustrative. Updated 2026-11-17.</footer>
 </div>
 
 <script type="application/json" id="phase-edits">{}</script>
@@ -569,20 +569,20 @@ each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
     $('tr-next').textContent = 'θ_v' + (v + 1); $('opt-v').textContent = `θ_v${v} → θ_v${v + 1}`; }
 
   const phases = [
-    { title: 'Sample a batch of tasks', where: 'Mac · orchestrator (vf-eval today, prime-rl orchestrator later)',
+    { title: 'Sample a batch of tasks', where: 'rl container (Modal) · prime-rl orchestrator',
       terms: ['orchestrator', 'group', 'G = 4', 'policy version'],
-      text: 'The orchestrator draws tasks from registry-train.json. Each task gets a group of G = 4 rollouts, because GRPO learns by comparing attempts at the same task. Up to 4 rollouts run at once, set by the Modal account limit of 10 GPUs.',
+      text: 'The orchestrator draws tasks from registry-trainable.json, the 138 train tasks the untrained model sometimes passes. Each task gets a group of G = 4 rollouts, because GRPO learns by comparing attempts at the same task. A step trains on 56 samples (one per conversation branch, about 8 groups).',
       run: async id => { turn = 0; $('turn').textContent = 0; $('reward-val').textContent = '?'; $('sol-state').textContent = 'empty stub';
         $('obs-text').textContent = 'runs grade() in place'; files([], []); gates(0); msgs(0, 0); active(['orch']); await sleep(1800); guard(id); } },
-    { title: 'Boot the agent sandbox and copy files in', where: 'Modal · agent sandbox, L4 GPU, image kernel-env-base:torch2.5.1-r2',
+    { title: 'Boot the agent sandbox and copy files in', where: 'Modal · agent sandbox, A10G GPU, image kernel-env-base:torch2.5.1-r2 (our runtime plugin)',
       terms: ['environment', 'rollout', 'sandbox'],
-      text: 'Modal starts one L4 sandbox per rollout. The task\'s environment/ folder is uploaded into /workspace: an untrusted copy of reference.py, an empty solution.py, and .kernel_tools/ with the grader code behind the check tool. The MCP server starts, and the network is locked to the tunnel domain only.',
+      text: 'Our runtime plugin (modal_runtime.py) starts one A10G sandbox per rollout. The task\'s environment/ folder is uploaded into /workspace: an untrusted copy of reference.py, an empty solution.py, and .kernel_tools/ with the grader code behind the check tool. The MCP server starts, and the network is locked to the tunnel domain only.',
       run: async id => { active(['orch', 'agent']); files([], []);
         for (const f of ['f-ref', 'f-sol', 'f-tools']) { await sleep(650); guard(id); files(['f-ref','f-sol','f-tools'].slice(0, ['f-ref','f-sol','f-tools'].indexOf(f) + 1), []); flash(f, true); await sleep(350); flash(f, false); }
         await sleep(700); guard(id); } },
-    { title: 'Turn: the harness calls the policy', where: 'sandbox → Prime tunnel → interception server (Mac) → vLLM (Modal H100)',
+    { title: 'Turn: the harness calls the policy', where: 'sandbox → modal.forward tunnel → interception server (env worker) → vLLM (H100, same container)',
       terms: ['turn', 'policy π_θ', 'state', 'context'],
-      text: 'The harness sends the conversation so far (the state) to the model: its whole messages list, the system prompt and instruction plus every earlier reply and tool result, so each turn\'s request is longer than the last. Its only route out of the locked sandbox is the Prime tunnel, which leads to the interception server on the Mac. The server records the request, then forwards it to the vLLM policy server over HTTPS with the API key.',
+      text: 'The harness sends the conversation so far (the state) to the model: its whole messages list, the system prompt and instruction plus every earlier reply and tool result, so each turn\'s request is longer than the last. Its only route out of the locked sandbox is the modal.forward tunnel, which leads to the interception server in the rl container. The server records the request, renders it to token ids with the qwen3.5 renderer, and sends them to vLLM on the container's other GPU.',
       run: async id => { turn++; $('turn').textContent = turn; active(['agent', 'intercept', 'vllm'], ['p-req', 'p-fwd']); $('msgs').classList.add('sending');
         try { await dot('p-req', 'req', 1300, false, id); guard(id); await dot('p-fwd', 'req', 1100, false, id); guard(id); await sleep(300); guard(id); }
         finally { $('msgs').classList.remove('sending'); } } },
@@ -606,30 +606,30 @@ each episode: agent sandbox, ≤30 turns with bash/edit/check → solution.py
       text: 'An episode ends when the model stops calling tools (agent_completed), after 30 turns, or after 900 seconds. Finalize copies exactly one file out: /workspace/solution.py, the artifact declared in task.toml. Nothing else from the agent sandbox, including its edited reference.py, reaches the grader.',
       run: async id => { active(['agent', 'grader'], ['p-art']); files(['f-ref','f-sol','f-tools'], []);
         await dot('p-art', 'file', 900, false, id); guard(id); files(['f-ref','f-sol','f-tools'], ['g-sol']); await sleep(600); guard(id); } },
-    { title: 'Grade in a fresh sandbox', where: 'Modal · grader sandbox, a fresh L4 the agent never touched',
+    { title: 'Grade in a fresh sandbox', where: 'Modal · grader sandbox, a fresh A10G the agent never touched',
       terms: ['reward', 'verifier', 'reward hacking guard'],
       text: 'A new sandbox starts from the same image. tests/ is staged only here: a trusted reference.py, test.sh and the grader code. test.sh runs the 7 gates in order and stops at the first failure. reward.json gets reward 1 only if all 7 pass, plus each gate as a metric.',
       run: async id => { active(['grader']); files(['f-ref','f-sol','f-tools'], ['g-sol']); gates(0);
         await sleep(500); guard(id); files(['f-ref','f-sol','f-tools'], ['g-sol', 'g-tests']); flash('g-tests', true); await sleep(500); flash('g-tests', false);
         for (let i = 1; i <= 7; i++) { await sleep(330); guard(id); gates(i); }
         await sleep(300); guard(id); $('reward-val').textContent = '1.0'; await sleep(700); guard(id); } },
-    { title: 'The reward joins the trajectory', where: 'grader → orchestrator → traces.jsonl (Mac)',
+    { title: 'The reward joins the trajectory', where: 'grader → orchestrator (rl container) → training samples',
       terms: ['reward', 'trajectory', 'mask'],
-      text: 'The reward travels back to the orchestrator and lands on the rollout\'s trace: messages, token ids, a mask marking which tokens the policy sampled (only those are trained on; the prompt and every tool result are in the trace but masked out), their logprobs, the reward and the gate metrics. One line in traces.jsonl per rollout. Everything up to here runs today (step 9).',
+      text: 'The reward travels back to the orchestrator and lands on the rollout\'s trace: messages, token ids, a mask marking which tokens the policy sampled (only those are trained on; the prompt and every tool result are in the trace but masked out), their logprobs, the reward and the gate metrics. A compacted episode becomes 2 training samples (one per branch), both carrying the episode's reward. Everything up to here ran in the baseline, E0 and check 2.',
       run: async id => { active(['grader', 'traces', 'orch'], ['p-rew']); await dot('p-rew', 'rew', 1500, false, id); guard(id);
         episodes += 4; $('ep-count').textContent = episodes; await sleep(700); guard(id); } },
-    { title: 'GRPO: advantages within the group', where: 'learner · rl_scratch/grpo.py (step 10)',
+    { title: 'GRPO: advantages within the group', where: 'prime-rl orchestrator (advantages) · rl_scratch/grpo.py (from scratch)',
       terms: ['GRPO', 'advantage Â', 'Dr. GRPO', 'zero-variance filter'],
       text: 'Once all 4 rollouts of the task are scored, their rewards form a group, say [1, 0, 0, 1]. Each advantage is the reward minus the group mean: [+0.5, −0.5, −0.5, +0.5]. Dr. GRPO does not divide by the group\'s std, which would inflate near-unanimous groups. A group where every reward is equal has all advantages 0, so it is dropped.',
       run: async id => { active(['traces', 'learner', 'b-group', 'b-adv'], ['p-trc']); await dot('p-trc', 'rew', 1200, false, id); guard(id); await sleep(1400); guard(id); } },
-    { title: 'Policy loss and weight update', where: 'trainer · Modal H100 (planned: step 11 for C1, steps 12–13 for prime-rl)',
+    { title: 'Policy loss and weight update', where: 'prime-rl trainer · H100 in the rl container (verified in check 4)',
       terms: ['trainer', 'importance ratio', 'clipping', 'loss aggregation', 'weight update'],
-      text: 'The trainer recomputes each sampled token\'s logprob under the current weights. The ratio π_new / π_old shows how far the policy moved since sampling; it is clipped to [0.8, 1.28] and the pessimistic min keeps one step from moving a token too far. Losses are averaged per task (agg = prompt), then backward and an optimizer step turn θ_v into θ_v+1.',
+      text: 'The trainer recomputes each sampled token\'s logprob under the current weights and compares it with the logprob vLLM recorded. prime-rl\'s IPO loss masks any token whose probability moved more than 0.3 and weights the rest by the ratio; there is no KL penalty. Losses are averaged over all tokens in the batch, then backward and an AdamW step update only the LoRA adapter (rank 16, 40.1M parameters, including the linear-attention layers), turning θ_v into θ_v+1. Our from-scratch grpo.py does the same with a clipped ratio [0.8, 1.28] instead.',
       run: async id => { active(['learner', 'b-loss', 'b-opt', 'trainer'], ['p-grad']); await sleep(900); guard(id);
         await dot('p-grad', 'w', 1500, false, id); guard(id); await sleep(500); guard(id); } },
     { title: 'Weight sync, and the loop continues', where: 'trainer → vLLM policy server',
       terms: ['weight sync', 'on-policy / off-policy', 'async'],
-      text: 'The new weights are copied into vLLM, so later rollouts sample from the updated policy. In C1 this is synchronous: vLLM sleeps during the trainer step, then wakes with the new weights. In prime-rl it is async: rollouts keep running on the older weights while the trainer works, and any rollout more than 4 versions old is dropped.',
+      text: 'The new LoRA adapter is written to disk and loaded into vLLM, so later rollouts sample from the updated policy. In prime-rl this is async: rollouts keep running on the older weights while the trainer works, and tokens more than max_staleness versions old (1 in the smoke run) are masked out of the loss. In C1 (our own loop) it would be synchronous: vLLM sleeps during the trainer step, then wakes with the new weights.',
       run: async id => { active(['trainer', 'vllm', 'orch'], ['p-sync']); await dot('p-sync', 'w', 1100, false, id); guard(id);
         version++; setVersion(version); await sleep(1800); guard(id); } },
   ];

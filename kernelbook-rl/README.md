@@ -1,10 +1,12 @@
 # kernelbook-rl
 
 Turns [GPUMODE/KernelBook](https://huggingface.co/datasets/GPUMODE/KernelBook) rows into Harbor-format
-Triton-kernel tasks, then trains Qwen on them with GRPO — first with our own loop (`rl_scratch/`),
-then with prime-rl (`rl_prime/`).
+Triton-kernel tasks, then trains Qwen3.5-9B on them with GRPO: with prime-rl (configs in `configs/`,
+launched on Modal by `scripts/s11_prime_rl_image.py`), plus our own GRPO math (`rl_scratch/`).
 
 Plan: https://claude.ai/code/artifact/915e76e0-6253-4b37-b9cc-29745e1cbff2
+Architecture (animated): [`docs/rl-architecture.html`](docs/rl-architecture.html) · run log and
+decisions: [`docs/NOTEBOOK.md`](docs/NOTEBOOK.md) · figures: [`docs/visuals/`](docs/visuals/README.md)
 
 ## Where things run
 
@@ -13,8 +15,33 @@ Plan: https://claude.ai/code/artifact/915e76e0-6253-4b37-b9cc-29745e1cbff2
   Mac-only tests.
 - **Modal:** only work that needs a GPU — the base-image smoke test, grading Triton kernels, task
   validation, the vLLM server, agent and grader sandboxes, and the RL loops (steps 3+).
-- **Mac, during evaluations (step 9+):** `vf-eval` orchestrates the run and relays every model call
-  (see [Running an evaluation](#running-an-evaluation-step-9)), so the Mac must stay online.
+- **Mac, only to launch:** since 2026-11-13 evaluations (`s10_modal_eval.py`) and training
+  (`s11_prime_rl_image.py`) run entirely on Modal with `modal run --detach`; the Mac can sleep.
+  (Until then `vf-eval` ran on the Mac and relayed every model call through Prime's tunnel; the
+  walkthrough below still describes that original setup.)
+
+## Architecture (current)
+
+```
+ Mac: launches only (modal run --detach)
+   │
+   ▼
+ MODAL ─────────────────────────────────────────────────────────────────────────────────────────
+ ┌─ rl container: s11 smoke_run (2× H100) ───────────────┐    ┌─ sandboxes (our runtime plugin, ─┐
+ │  prime-rl `rl` launcher                               │    │   modal_runtime.py)              │
+ │   orchestrator  samples registry-trainable (138),     │    │                                  │
+ │                 groups of 4, advantages, batches      │    │  agent sandbox  (A10G, 1/episode)│
+ │   env worker    our taskset + interception server ◄──┼────┼── bash harness + MCP check tool  │
+ │                 (port 8765, public via modal.forward) │    │  network: tunnel domain only     │
+ │   vLLM          H100 #1: samples, logprobs, LoRA      │    │            │ solution.py only    │
+ │        ▲  LoRA adapter after every step               │    │            ▼                     │
+ │   trainer       H100 #2: IPO loss, LoRA r16, AdamW    │    │  grader sandbox (fresh A10G)     │
+ └───────────────────────────────────────────────────────┘    │  7 gates → reward 0/1 ──► env    │
+                                                              └──────────────────────────────────┘
+ Evals (baseline, dev E0/E1): s10_modal_eval.py runs vf-eval + interception in a CPU container,
+ the policy is the deployed vLLM app (s09_serve.py, H100); same sandboxes and grader.
+ Volumes: kernelbook-runs (traces, metrics, logs) · kernelbook-hf-cache (model weights)
+```
 
 ## Steps
 
@@ -33,12 +60,24 @@ Each step adds one component and ends with a check. Run commands from this folde
 | 8 | `scripts/s08_split.py` | Mac | `uv run python scripts/s08_split.py` splits kept tasks by module group (sha256 of the name, ~10% dev); writes `work.nosync/data/splits/{train,dev}.txt` + `work.nosync/tasks/registry-{train,dev}.json` |
 | 9 | `scripts/s09_serve.py` (vLLM), `scripts/s09_ping.py`, `kernelbook_taskset.py`, `configs/baseline_train.toml`, `configs/eval_dev.toml`, `scripts/s09_baseline.py` | Modal H100 (vLLM) + L4s (agents, graders); Mac (orchestrator + relay) | `uv run python scripts/s09_ping.py` ends with `tool calls: ['check'] -> OK`; then see [Running an evaluation](#running-an-evaluation-step-9) |
 | 10 | `rl_scratch/grpo.py` (group advantages, informative-group filter, clipped policy loss with token / sequence / prompt aggregation), `tests/test_grpo.py` | Mac CPU | `uv run pytest tests/test_grpo.py`: 12 hand-computed checks pass |
+| 10b | `scripts/s10_modal_eval.py` (vf-eval + interception server in a Modal container, `modal.forward` tunnel) | Modal CPU + the vLLM app + A10G sandboxes | smoke on one task: 4/4 clean episodes; used for baseline batch 3 and evals |
+| 11 | `scripts/s11_prime_rl_image.py` (prime-rl image + all part-1 checks and launches), `modal_runtime.py` (verifiers runtime plugin for Modal sandboxes) | Modal | `--which image` / `taskset` / `runtime` (22/22) / `e2e` (3/4, isolated grader) |
+| 12 | `scripts/s12_renderer_check.py` (qwen3.5 renderer vs HF template and vLLM's parser) | Modal CPU | `--which renderer`: 6/6 branches token-identical, 79/79 tool calls (after the `.strip()` patch) |
+| 13 | `scripts/s13_trainer_check.py`, `configs/check4_trainer_fake.toml` (trainer on GPU; vLLM vs trainer logprobs) | Modal H100 | `--which trainer`: 9.6 s/step at 2×32K tokens; mismatch KL 0.0003 |
+| 14 | `scripts/s14_trainable_registry.py`, `configs/rl_smoke.toml` (138 trainable tasks; smoke-run config) | Mac; Modal | `--which smoke --dry-run` resolves; `--which smoke` launches on 2× H100 |
 
-## Status (2026-10-08)
+## Status (2026-11-17)
 
-Steps 0–8 done: 500 tasks generated, 436 validated, split into train 382 / dev 54. Step 9: vLLM
-serving works, and full agent episodes run end to end (sandbox → tunnel → vLLM → MCP `check` →
-separate grader).
+- Data: 500 tasks generated, 436 validated, split by module group into train 382 / dev 54.
+- **Train baseline** (untrained Qwen3.5-9B, all 382 train tasks × 4): 20.0% pass@1, 41.4% pass@4;
+  **138 trainable tasks** (0 < p < 1). **Dev E0**: 21.9% pass@1, 42.6% pass@4.
+- **prime-rl stack verified** (part 1, checks 1–4): image; our taskset + Modal runtime plugin end to
+  end on prime-rl's verifiers; qwen3.5 renderer (one tool-argument whitespace bug patched); trainer
+  on H100 with LoRA (vLLM vs trainer mismatch KL 0.0003).
+- **Next:** the training smoke run (`configs/rl_smoke.toml`: LoRA r16 incl. linear attention, lr 2e-5,
+  15 steps), then the real run and dev eval E1 against E0. Details in `docs/NOTEBOOK.md`.
+
+### Earlier status (2026-10-08)
 
 - **Qwen3.5-4B: p = 0 on all 7 tasks tried** (two 3-task dev pilots, one 4-task train test). The
   first pilot also showed the model never found the `check` tool (fixed: `instruction.md` names
@@ -49,10 +88,12 @@ separate grader).
   match: basicmodel3 p = 1, smoothl1loss p = 0.5 (trainable), avgpoolpad and residualblock p = 0.
 - Modal GPU limit is 10, so `max_concurrent = 4` (≈ 6 GPUs at peak).
 
-Next: the 30-task train baseline (`-n 30`, 4 attempts) to estimate how many train tasks are
-trainable, then the dev evaluation (`configs/eval_dev.toml`), then the RL loop (steps 10+).
-
 ## Running an evaluation (step 9)
+
+> This walkthrough describes the original setup (October), with `vf-eval` on the Mac behind
+> Prime's tunnel and L4 sandboxes. The verifiers mechanics below are unchanged; what moved:
+> the orchestrator and interception server now run in a Modal container (`s10_modal_eval.py`,
+> `modal.forward` instead of Prime's tunnel, no `PRIME_API_KEY`) and sandboxes use A10G.
 
 Every run needs three variables from `.env` (gitignored): `VLLM_API_KEY` (our vLLM server),
 `PRIME_API_KEY` (the tunnel that lets sandboxes reach the relay on the Mac) and `SSL_CERT_FILE`
