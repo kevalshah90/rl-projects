@@ -494,7 +494,12 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   **Decided: `lr = 2e-5`** for the smoke run (`[trainer.optim]`).
 - **Prime platform monitor is on by default** (`monitors.prime` in trainer and orchestrator): a real
   launch would register a run on Prime's platform. Turned off at launch (`--no-*.monitors.prime`);
-  metrics stay local in the file monitor (`metrics.jsonl` under the run dir).
+  metrics stay local in the file monitor (`metrics.jsonl` under the run dir). Rerun dry run with the
+  flags: `prime: None` in trainer + orchestrator, trainer `lr` 2e-05.
+- **Launch wired:** s11 `smoke_run` (`--which smoke`, no `--dry-run`): one container with 2 H100s,
+  `rl` runs trainer + vLLM + orchestrator + env worker; interception via `modal.forward(8765)`; run
+  dir on local disk (vLLM reads weight broadcasts from it), logs/configs/metrics mirrored to the
+  Volume `rl_smoke/` every minute (weights excluded); HF cache Volume for the model; 8 h timeout.
 
 ## 4. Decisions (and why)
 

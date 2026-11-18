@@ -347,33 +347,88 @@ def resolve_rl_config(config: str, tunnel_url: str) -> Path:
     return out
 
 
+# Off for every rl launch: the Prime platform monitor (default on in trainer + orchestrator)
+# would register the run on Prime's platform. Metrics stay local (file monitor, metrics.jsonl).
+NO_PRIME = ["--no-trainer.monitors.prime", "--no-orchestrator.monitors.prime"]
+
+
 @app.function(cpu=2, memory=8192, timeout=20 * 60, volumes={"/runs": runs})
 def smoke_dry_run(config: str = "configs/rl_smoke.toml") -> None:
     """`rl --dry-run` on the smoke config (CPU only): parse + validate + resolve the full config,
     write the per-process configs (trainer / orchestrator / inference / env workers), exit.
     No model download, no GPU, no sandboxes. Resolved configs land in the Volume under
-    checks/rl_smoke_dry/ and are printed here."""
+    checks/rl_smoke_dry/; the key fields are printed here."""
+    import json
     import shutil
     import subprocess
 
     cfg = resolve_rl_config(config, "https://dry-run.invalid")   # no tunnel needed to validate
     out = Path("/runs/checks/rl_smoke_dry")
     shutil.rmtree(out, ignore_errors=True)
-    cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out)]
+    cmd = ["rl", "@", str(cfg), "--dry-run", "--output-dir", str(out), *NO_PRIME]
     print("$", " ".join(cmd), flush=True)
     code = subprocess.run(cmd, cwd=KB).returncode
     print(f"-> exit {code}", flush=True)
-    for f in sorted(out.rglob("*.toml")):
-        print(f"\n===== {f.relative_to(out)} =====\n{f.read_text()}", flush=True)
+    for f in sorted(out.rglob("resolved/*.json")):
+        c = json.loads(f.read_text())
+        print(f"{f.name}: monitors={c.get('monitors')} lr={c.get('optim', {}).get('lr')}", flush=True)
     runs.commit()
+
+
+@app.function(
+    gpu="H100:2",                       # 1 vLLM + 1 trainer (deployment in the config)
+    cpu=16, memory=131072,
+    timeout=8 * 60 * 60,                # 15 steps of up-to-15-min episodes, plus startup
+    volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache},
+)
+def smoke_run(config: str = "configs/rl_smoke.toml", args: str = "") -> None:
+    """The smoke run: `rl` (trainer + vLLM + orchestrator + env worker) on one 2-H100 container.
+    Sandboxes reach the env worker's interception server through modal.forward (as check 2).
+    The run dir stays on local disk (weight broadcasts are read by vLLM from there); logs,
+    configs and metrics are mirrored to the Volume (rl_smoke/) every minute, weights excluded."""
+    import shutil
+    import subprocess
+    import threading
+
+    local = Path("/tmp/rl_smoke")
+    mirror = Path("/runs/rl_smoke")
+    skip = shutil.ignore_patterns("broadcasts", "weights", "checkpoints", "*.safetensors", "*.bin", "*.pt")
+
+    def sync() -> None:
+        if local.exists():
+            shutil.copytree(local, mirror, dirs_exist_ok=True, ignore=skip)
+            runs.commit()
+
+    stop = threading.Event()
+
+    def keep_syncing() -> None:
+        while not stop.wait(60):
+            try:
+                sync()
+            except Exception as e:   # a failed mirror must never kill the run
+                print("mirror failed:", e, flush=True)
+
+    threading.Thread(target=keep_syncing, daemon=True).start()
+    subprocess.run("nvidia-smi --query-gpu=name,memory.used --format=csv", shell=True)
+    with modal.forward(PORT) as tunnel:
+        cfg = resolve_rl_config(config, tunnel.url)
+        cmd = ["rl", "@", str(cfg), "--output-dir", str(local), *NO_PRIME, *args.split()]
+        print("interception server reachable at", tunnel.url, flush=True)
+        print("$", " ".join(cmd), flush=True)
+        code = subprocess.run(cmd, cwd=KB).returncode
+    stop.set()
+    sync()
+    hf_cache.commit()
+    print(f"-> exit {code}", flush=True)
 
 
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "") -> None:
     if which == "smoke":
-        if not dry_run:
-            raise SystemExit("smoke: only --dry-run is wired up so far")
-        smoke_dry_run.remote()
+        if dry_run:
+            smoke_dry_run.remote()
+        else:
+            smoke_run.remote(args=args)
         return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
