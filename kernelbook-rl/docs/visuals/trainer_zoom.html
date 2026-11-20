@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trainer step zoom</title><meta name="description" content="Animated zoom into one prime-rl trainer step: importance ratio and IPO mask, loss, LoRA-only backward pass, AdamW, adapter sync to vLLM.">
+<title>Trainer step zoom</title><meta name="description" content="Animated zoom into one prime-rl trainer step: importance ratio and IPO mask, mismatch KL, the loss −A × ratio and why it has a minus sign, LoRA-only backward pass, AdamW, adapter sync to vLLM.">
 <!-- KernelBook RL notebook visual. Self-contained: open in a browser (no build, no network). -->
 <style>
 :root{--text-primary:#1f1e1d;--text-secondary:#5f5e5a;--text-muted:#888780;--text-accent:#185FA5;--text-warning:#854F0B;--surface-0:#f5f4ef;--surface-1:#f1efe8;--surface-2:#ffffff;--bg-accent:#E6F1FB;--border:rgba(31,30,29,.15);--border-strong:rgba(31,30,29,.3);--border-accent:#85B7EB;--border-warning:#EF9F27;--radius:8px;--b:#888780;--t:#5f5e5a;--p:#1f1e1d;--s:#5f5e5a;--bg2:#f1efe8;color-scheme:light}
@@ -45,13 +45,13 @@ button:hover{background:var(--surface-1)}button:active{transform:scale(.98)}
 .ph{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0 10px}
 .pd{font-size:11px;padding:3px 8px;border-radius:var(--radius);border:0.5px solid var(--border);color:var(--text-secondary);cursor:pointer;background:transparent}
 .pd.on{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}
-.cap{background:var(--surface-1);border-radius:12px;padding:12px 16px;min-height:100px}
-.cap p{margin:0}.ct{font-size:15px;font-weight:500}.cx{font-size:13px;color:var(--text-secondary);margin-top:4px!important;line-height:1.6}
+.cap{background:var(--surface-1);border-radius:12px;padding:12px 16px;min-height:230px}
+.cap p{margin:0}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--text-primary)}.ct{font-size:15px;font-weight:500}.cx{font-size:13px;color:var(--text-secondary);margin-top:4px!important;line-height:1.6}
 .ar{fill:none;stroke:var(--b);stroke-width:0.8}
 </style>
 <svg width="100%" viewBox="0 0 680 375" role="img" id="sv"><title>Inside the trainer</title><desc>Token chips at the top feed a stack of frozen layers with LoRA adapters; outputs go to a ratio and mask box, then a loss box; gradients flow back to the LoRA adapters; AdamW updates them; the adapter is saved and sent to vLLM.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
-<text class="ts" x="39" y="22">Batch A, attempt 1 (passed): advantage +0.5. Every attempt in the batch goes through the same steps.</text>
+<text class="ts" id="hdr" x="39" y="22"></text>
 <g id="chips"></g>
 <rect x="40" y="100" width="470" height="258" rx="14" fill="none" stroke="var(--b)" stroke-width="0.5" stroke-dasharray="5 4"/>
 <text class="th" x="56" y="120">Trainer (GPU 1)</text>
@@ -66,6 +66,10 @@ button:hover{background:var(--surface-1)}button:active{transform:scale(.98)}
 <g class="c-teal"><rect id="b-ra" x="320" y="130" width="170" height="48" rx="8" stroke-width="0.5"/>
 <text class="th" x="405" y="146" text-anchor="middle" dominant-baseline="central">Ratio + IPO mask</text>
 <text class="ts" x="405" y="164" text-anchor="middle" dominant-baseline="central">p_train ÷ p_vLLM</text></g>
+<path d="M490 154 L518 154" fill="none" stroke="var(--b)" stroke-width="0.8" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<g class="c-amber"><rect id="b-kl" x="520" y="130" width="140" height="48" rx="8" stroke-width="0.5"/>
+<text class="th" x="590" y="146" text-anchor="middle" dominant-baseline="central">Mismatch KL</text>
+<text class="ts" id="klv" x="590" y="164" text-anchor="middle" dominant-baseline="central">monitor only</text></g>
 <g class="c-teal"><rect id="b-lo" x="320" y="205" width="170" height="48" rx="8" stroke-width="0.5"/>
 <text class="th" x="405" y="221" text-anchor="middle" dominant-baseline="central">Loss</text>
 <text class="ts" id="lossv" x="405" y="239" text-anchor="middle" dominant-baseline="central">mean(−A × ratio)</text></g>
@@ -80,7 +84,7 @@ button:hover{background:var(--surface-1)}button:active{transform:scale(.98)}
 <text class="ts" id="vv" x="580" y="331" text-anchor="middle" dominant-baseline="central">policy v1</text></g>
 <g id="pk"></g>
 </svg>
-<div class="ctl"><button id="pp" onclick="toggle()">Pause</button><button onclick="nextPh()">Next stage</button><button onclick="restart()">Restart</button></div>
+<div class="ctl"><button id="pp" onclick="toggle()">Pause</button><button onclick="nextPh()">Next stage</button><button onclick="restart()">Restart</button><button id="ab" onclick="flipA()">Show failing attempt (A = −0.5)</button></div>
 <div class="ph" id="ph"></div>
 <div class="cap"><p class="ct" id="ct"></p><p class="cx" id="cx"></p></div>
 <script>
@@ -96,22 +100,30 @@ const V={
 pv:i=>T[i].m?"masked: tool":"p_vLLM "+fmt(T[i].pv),
 pt:i=>T[i].m?"masked: tool":"p_train "+fmt(T[i].pt),
 ra:i=>T[i].m?"masked: tool":T[i].dr?"IPO: dropped":"ratio "+fmt(T[i].pt/T[i].pv),
-lo:i=>T[i].m||T[i].dr?"no loss":"loss "+fmt(-0.5*T[i].pt/T[i].pv)};
-function vals(k){T.forEach((t,i)=>{document.getElementById("v"+i).textContent=V[k](i);document.getElementById("ch"+i).style.opacity=(t.m||(t.dr&&(k==="ra"||k==="lo")))?.45:1})}
+kl:i=>{if(T[i].m)return"masked: tool";const r=T[i].pt/T[i].pv,k=r-1-Math.log(r);return"KL "+k.toFixed(4)+(T[i].dr?" (drop)":"")},
+lo:i=>T[i].m||T[i].dr?"no loss":"loss "+fmt(-A*T[i].pt/T[i].pv),
+gr:i=>T[i].m||T[i].dr?"no grad":(A>0?"push p ↑":"push p ↓")};
+let A=0.5;const sA=()=>(A>0?"+":"−")+Math.abs(A);
+function hdr(){set("hdr",A>0?"Batch A, attempt 1 (passed): advantage +0.5. Every attempt in the batch goes through the same steps.":"Batch A, attempt 3 (failed): advantage −0.5. Same tokens, opposite push.")}
+function flipA(){A=-A;set("ab",A>0?"Show failing attempt (A = −0.5)":"Show passing attempt (A = +0.5)");hdr();enter()}
+function vals(k){T.forEach((t,i)=>{document.getElementById("v"+i).textContent=V[k](i);document.getElementById("ch"+i).style.opacity=(t.m||(t.dr&&(k==="ra"||k==="lo"||k==="gr")))?.45:1})}
 const lanes=[100,140,180];
 const P=[
-{t:"1. Batch arrives",x:"Each attempt arrives as one long token sequence with: the token IDs, a mask (tool output and prompt are masked, since the model didn't write them), vLLM's probability for each token when it was sampled, and one advantage for the whole attempt, here +0.5.",d:2400,v:"pv",on:[],pk:[1,2,4,5].map((i,n)=>({p:[[CX(i)+46,84],[163,128]],c:"#1D9E75",dl:n*.1}))},
+{t:"1. Batch arrives",x:()=>`Each attempt arrives as one long token sequence with: the token IDs, a mask (tool output and prompt are masked, since the model didn't write them), vLLM's probability for each token when it was sampled, and one advantage for the whole attempt, here ${sA()}.`,d:2400,v:"pv",on:[],pk:[1,2,4,5].map((i,n)=>({p:[[CX(i)+46,84],[163,128]],c:"#1D9E75",dl:n*.1}))},
 {t:"2. Forward pass",x:"The trainer runs the same tokens through its own copy of the model: frozen base layers plus the current LoRA adapters. Nothing is generated. For each token it reads off how likely its current weights find that token: p_train.",d:2800,v:"pt",on:["base0","base1","base2","base3","lora0","lora1","lora2","lora3"],pk:lanes.map((x,n)=>({p:[[x,130],[x,262]],c:"#1D9E75",dl:n*.12})).concat([{p:[[268,152],[318,152]],c:"#1D9E75",dl:.6}])},
 {t:"3. Ratio and IPO mask",x:"For each model-written token, ratio = p_train ÷ p_vLLM. Values near 1 mean the trainer and vLLM agree. tl.store shows staleness gone too far: vLLM gave it 0.70, the trainer now gives 0.30. That's a difference over 0.3, so IPO drops the token rather than trust a wild ratio.",d:2600,v:"ra",on:["b-ra"],pk:[]},
-{t:"4. Loss",x:"Each kept token's loss = −advantage × ratio, about −0.50 here. Losses from all kept tokens of all 32 attempts are averaged into one number. Lowering it means raising the probability of tokens from passing attempts and lowering it for failing ones.",d:2600,v:"lo",on:["b-lo"],pk:[{p:[[405,178],[405,203]],c:"#EF9F27",dl:0,r:6}],post:()=>set("lossv","batch loss −0.17")},
-{t:"5. Backward pass",x:"Backpropagation sends the loss's gradient back through every layer. The base weights are frozen, so no gradient is kept for them. Only the LoRA adapters (about 30M numbers) get gradients. Their directions add up across every kept token in the batch.",d:3000,v:"lo",on:["lora0","lora1","lora2","lora3"],pk:[{p:[[318,229],[270,229]],c:"#7F77DD",dl:0,r:6}].concat([0,1,2,3].map(k=>({p:[[252,262-k*0],[252,130]],c:"#7F77DD",dl:.25+k*.1})))},
-{t:"6. AdamW step",x:"AdamW moves each LoRA number a tiny step against its gradient, scaled by running averages of the gradient's direction and size, with a small learning rate. After this, p(tl.load) in that context is a bit higher: 0.41 → about 0.42 next time.",d:2400,v:"lo",on:["b-ad","lora0","lora1","lora2","lora3"],pk:[{p:[[163,265],[163,298]],c:"#D85A30",dl:0,r:6}]},
-{t:"7. Save adapter, send to vLLM",x:"Only the adapter is written, tens of MB rather than 18 GB. vLLM loads it, and new requests are answered by v2. That's the v2 arriving mid-rollout in the first animation.",d:2600,v:"lo",on:["b-sv","b-vl"],pk:[{p:[[268,322],[318,322],[490,322],[518,322]],c:"#534AB7",dl:0,r:7}],post:()=>{ver++;set("vv","policy v"+ver)}}];
+{t:"4. Mismatch KL (monitor only)",x:()=>"Do the trainer and vLLM agree on the probability of each sampled token? They should, because they hold the same weights. Per token: r − 1 − log r, with r = p_train ÷ p_vLLM. That's 0 when they agree and grows as they drift. Here: tl.load 0.0003 (close), tl.store 0.28 (far, so IPO dropped it). Logged only, not part of the loss. rl-main-1 stayed at 2–3e-4. A jump means something is broken (weight sync, chat template, staleness), and the update can't be trusted.",d:6500,v:"kl",on:["b-kl"],pk:[{p:[[490,154],[518,154]],c:"#EF9F27",dl:0,r:5}],post:()=>set("klv","run: 2–3e-4")},
+{t:"5. Loss: one term per kept token",x:()=>`Each kept token gets the term <b>−A × ratio</b>. The minus flips the sign of A (ratio ≈ 1):<br>• passing attempt, A = +0.5 → term ≈ <b>−0.5</b> per token<br>• failing attempt, A = −0.5 → term ≈ <b>+0.5</b> per token<br>This attempt: A = ${sA()}, so each of its kept tokens adds ≈ ${A>0?"−0.5":"+0.5"}. Prompt, tool output and IPO-dropped tokens add nothing.<br><b>Batch loss</b> = sum of the terms over every kept token of all 32 attempts ÷ the number of kept tokens:<br><span class=m>loss = (1/N) × Σ<sub>t</sub> (−A × r<sub>t</sub>)</span><br> It's one number per batch, and it hovers near 0, so it's not a progress signal.`,d:6000,v:"lo",on:["b-lo"],pk:[{p:[[405,178],[405,203]],c:"#EF9F27",dl:0,r:6}],post:()=>set("lossv","batch loss ≈ 0")},
+{t:"6. Why −A × ratio",x:()=>`<b>Why the minus:</b> the optimizer always makes the loss smaller.<br>• passing term −0.5 × ratio gets smaller when p_train goes <b>up</b><br>• failing term +0.5 × ratio gets smaller when p_train goes <b>down</b><br>So minimizing the loss makes passing tokens more likely and failing ones less likely. Without the minus, it would reinforce failures.<br><b>Why the ratio:</b> vLLM sampled these tokens, possibly one version stale. Dividing by p_vLLM cancels how often vLLM happened to pick them, so the average scores the trainer's own policy. Here ratio ≈ 1, so it's only a small correction.`,d:7000,v:"gr",on:["b-lo"],pk:[]},
+{t:"7. The math in a tiny batch",x:()=>`Two kept tokens: <b>P</b> from a passing attempt (A = +0.5) and <b>F</b> from a failing one (A = −0.5). Both have r = 1. N = 2.<br><span class=m>loss = (−0.5 × r<sub>P</sub> + 0.5 × r<sub>F</sub>) ÷ 2 = (−0.5 + 0.5) ÷ 2 = 0</span><br><b>Gradient = slope:</b> how much does the loss change if a token's log p goes up a little? r = p_train ÷ p_vLLM, so raising log p raises r by the same proportion:<br><span class=m>slope<sub>t</sub> = −A × r<sub>t</sub> ÷ N  →  P: −0.25   F: +0.25</span><br><b>Step downhill</b> (opposite to the slope, size 0.1): log p<sub>P</sub> +0.025 (P more likely), log p<sub>F</sub> −0.025 (F less likely). Now r<sub>P</sub> ≈ 1.025 and r<sub>F</sub> ≈ 0.975:<br><span class=m>new loss = (−0.5 × 1.025 + 0.5 × 0.975) ÷ 2 = −0.0125</span>  lower, as intended.`,d:8000,v:"gr",on:["b-lo"],pk:[]},
+{t:"8. Backward: one gradient per batch",x:()=>`The trainer can't set log p directly. It changes the 40.1M LoRA numbers θ, so the per-token slopes are carried to θ (chain rule):<br><span class=m>∇<sub>θ</sub> loss = (1/N) × Σ<sub>t</sub> (−A × r<sub>t</sub>) × ∇<sub>θ</sub> log p<sub>t</sub></span><br>∇<sub>θ</sub> log p<sub>t</sub> is the direction in weight space that makes token t more likely, and backprop computes it. The result is <b>one vector per batch</b>: for each LoRA number, which way to nudge it to lower the batch loss.<br>• each kept token adds a direction that would make it more likely, scaled by its term: passing tokens pull toward "more likely", failing ones toward "less likely"<br>• where passing and failing attempts do the same thing, the pulls cancel; where they differ, they add up<br>• branches go through in micro-batches of ≤ 32K tokens, and their gradients add into one buffer<br>• base weights are frozen, so they get no gradient`,d:6500,v:"gr",on:["lora0","lora1","lora2","lora3"],pk:[{p:[[318,229],[270,229]],c:"#7F77DD",dl:0,r:6}].concat([0,1,2,3].map(k=>({p:[[252,262-k*0],[252,130]],c:"#7F77DD",dl:.25+k*.1})))},
+{t:"9. AdamW: one step per batch",x:()=>`AdamW moves each LoRA number a tiny step against the gradient (lr 2e-5). ${A>0?"p(tl.load) in that context goes up a little: 0.41 → about 0.42.":"p(tl.load) in that context goes down a little: 0.41 → about 0.40."}<br><b>1 batch → 1 loss → 1 gradient → 1 step → 1 new adapter version.</b> rl-main-1 did this 20 times (v1 to v20). The average shift was about 0.002 per token: the right direction, but tiny (offline check, 2026-11-19).`,d:4500,v:"gr",on:["b-ad","lora0","lora1","lora2","lora3"],pk:[{p:[[163,265],[163,298]],c:"#D85A30",dl:0,r:6}]},
+{t:"10. Save adapter, send to vLLM",x:"Only the adapter is written, tens of MB rather than 18 GB. vLLM loads it, and new requests are answered by v2. That's the v2 arriving mid-rollout in the first animation.",d:2600,v:"lo",on:["b-sv","b-vl"],pk:[{p:[[268,322],[318,322],[490,322],[518,322]],c:"#534AB7",dl:0,r:7}],post:()=>{ver++;set("vv","policy v"+ver)}}];
 let ph=0,t0=null,play=!matchMedia("(prefers-reduced-motion: reduce)").matches,el=0,dots=[],ver=1;
 function set(id,v){document.getElementById(id).textContent=v}
 function at(p,f){let L=[],Tt=0;for(let i=1;i<p.length;i++){const l=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);L.push(l);Tt+=l}let d=f*Tt;for(let i=0;i<L.length;i++){if(d<=L[i]){const k=L[i]?d/L[i]:0;return[p[i][0]+(p[i+1][0]-p[i][0])*k,p[i][1]+(p[i+1][1]-p[i][1])*k]}d-=L[i]}return p[p.length-1]}
 function hl(ids){document.querySelectorAll("#sv rect[id]").forEach(r=>r.style.strokeWidth=ids.includes(r.id)?"2":"0.5")}
-function enter(){const s=P[ph];if(ph===0)set("lossv","mean(−A × ratio)");if(s.pre)s.pre();vals(s.v);set("ct",s.t);set("cx",s.x);hl(s.on);
+function enter(){const s=P[ph];if(ph===0){set("lossv","mean(−A × ratio)");set("klv","monitor only")}if(s.pre)s.pre();vals(s.v);set("ct",s.t);document.getElementById("cx").innerHTML=typeof s.x==="function"?s.x():s.x;hl(s.on);
 const g=document.getElementById("pk");g.innerHTML="";dots=s.pk.map(k=>{const c=document.createElementNS(NS,"circle");c.setAttribute("r",k.r||5);c.setAttribute("fill",k.c);c.setAttribute("opacity",0);g.appendChild(c);return{c,k}});
 document.getElementById("ph").innerHTML=P.map((q,i)=>`<button class="pd ${i===ph?"on":""}" onclick="jump(${i})">${i+1}</button>`).join("");el=0;t0=null}
 function leave(){const s=P[ph];if(s.post)s.post()}
@@ -122,6 +134,6 @@ function toggle(){play=!play;set("pp",play?"Pause":"Play")}
 function nextPh(){leave();ph=(ph+1)%P.length;enter();play=false;set("pp","Play")}
 function jump(i){ph=i;enter();play=false;set("pp","Play")}
 function restart(){ph=0;ver=1;set("vv","policy v1");enter();play=true;set("pp","Pause")}
-set("pp",play?"Pause":"Play");enter();requestAnimationFrame(frame);
+set("pp",play?"Pause":"Play");hdr();enter();requestAnimationFrame(frame);
 </script>
 </main></body></html>
