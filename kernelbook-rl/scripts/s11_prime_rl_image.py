@@ -180,7 +180,7 @@ def container_registries() -> Path:
     import json
     out = Path("/tmp/registries")
     out.mkdir(exist_ok=True)
-    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json"]:
+    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json", "registry-curriculum.json"]:
         data = json.loads((KB / "work.nosync/tasks" / name).read_text())
         for dataset in data:
             for task in dataset["tasks"]:
@@ -351,7 +351,7 @@ def resolve_rl_config(config: str, tunnel_url: str) -> Path:
     tunnel placeholder -> the real modal.forward URL. Written next to nothing else in /tmp."""
     regs = container_registries()
     text = (KB / config).read_text()
-    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json"]:
+    for name in ["registry-train.json", "registry-dev.json", "registry-trainable.json", "registry-curriculum.json"]:
         text = text.replace(f'"work.nosync/tasks/{name}"', f'"{regs / name}"')
     assert "__TUNNEL_URL__" in text, "config has no tunnel placeholder"
     out = Path("/tmp") / Path(config).name
@@ -469,12 +469,21 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
             shutil.rmtree(dst / f"step_{n}", ignore_errors=True)
 
     def sync() -> None:
+        # Each part in its own try: in rl-main-1 one pass died on a dangling W&B log symlink inside
+        # the run dir and skipped the checkpoint copy for that minute.
+        copy = lambda src, dst, **kw: shutil.copytree(src, dst, dirs_exist_ok=True,
+                                                      ignore_dangling_symlinks=True, **kw)
+        parts = []
         if local.exists():
-            shutil.copytree(local, mirror, dirs_exist_ok=True, ignore=skip)
-            sync_ckpts()
+            parts += [("logs", lambda: copy(local, mirror, ignore=skip)), ("checkpoints", sync_ckpts)]
         for extra, name in [(wandb_dir, "wandb"), (sys_dir, "system")]:
             if extra.exists():
-                shutil.copytree(extra, mirror / name, dirs_exist_ok=True)
+                parts.append((name, lambda e=extra, n=name: copy(e, mirror / n)))
+        for name, fn in parts:
+            try:
+                fn()
+            except Exception as e:   # a failed part must never block the others or kill the run
+                print(f"mirror {name} failed: {e}", flush=True)
         runs.commit()
 
     stop = threading.Event()
@@ -519,13 +528,14 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
 
 @app.function(gpu="H100", cpu=8, memory=131072, timeout=3 * 60 * 60,
               volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache})
-def policy_shift() -> None:
-    """Offline check (scripts/s15_policy_shift.py): score rl-main-1's sampled tokens under the base
-    policy v0 and the step-20 checkpoint; results in /runs/checks/policy_shift/."""
+def policy_shift(run_name: str = "rl-main-1", step: int = 20) -> None:
+    """Offline check (scripts/s15_policy_shift.py): score a run's sampled tokens under the base
+    policy v0 and its step-N checkpoint; results in /runs/checks/policy_shift*/."""
+    import os
     import subprocess
     runs.reload()
     code = subprocess.run("torchrun --nproc-per-node 1 --master-port 29512 scripts/s15_policy_shift.py",
-                          shell=True, cwd=KB).returncode
+                          shell=True, cwd=KB, env={**os.environ, "RUN": run_name, "STEP": str(step)}).returncode
     runs.commit()
     hf_cache.commit()
     print(f"-> exit {code}", flush=True)
@@ -551,7 +561,7 @@ def main(which: str = "image", dry_run: bool = False, args: str = "",
         e2e.remote(dry_run=dry_run, args=args)
         return
     if which == "policy_shift":
-        call = policy_shift.spawn()
+        call = policy_shift.spawn(run_name=run_name or "rl-main-1", step=int(args or 20))
         print(f"spawned policy_shift: function call {call.object_id}", flush=True)
         return
     if which == "trainer":

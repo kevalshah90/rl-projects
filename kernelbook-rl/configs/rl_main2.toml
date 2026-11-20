@@ -1,0 +1,99 @@
+# RL run 2: as configs/rl_main.toml (rl-main-1) except three changes, because rl-main-1 moved the
+# policy too little (offline check s15: KL(v0||v20) ~1e-3, no generalization; NOTEBOOK 2026-11-19):
+#   lr        2e-5 -> 1e-4   (typical LoRA lr; grad norm ~0.015 was never clipped)
+#   max_steps 20   -> 40
+#   tasks     138 trainable -> 77 curriculum tasks, P(mixed group) >= 0.6 (s16): expected mixed
+#             share 0.64 -> 0.78, ~4 visits per task
+# group_size stays 4 and all agent settings stay as E0, so E1 vs E0 still differs only in weights.
+# Launch (spawned; resumable by run name):
+#   uv run modal run --detach scripts/s11_prime_rl_image.py --which rl \
+#     --config configs/rl_main2.toml --run-name rl-main-2
+# Validate first (CPU only):
+#   uv run modal run scripts/s11_prime_rl_image.py --which rl --config configs/rl_main2.toml --dry-run
+# Early gate: at the step-6 checkpoint run the offline check (s15) against it; continue only if
+# KL(v0||v6) is ~10x rl-main-1's and untrained pass - fail > 0.
+# Agent settings match baseline / E0 exactly (bash harness, 30 turns, T = 1, 8192 tokens per turn,
+# 32K context, compaction at 16,384, A10G sandboxes), so E1 vs E0 differs only in the weights.
+#
+# Sized for the 10-GPU Modal cap (4 episodes in flight): ~1-1.5 h per step, ~2 days for 40 steps.
+# If the cap is raised to ~34: max_inflight = 16.
+
+max_steps = 40                   # optimizer updates; ~1-1.5 h each at 4 in flight -> ~2 days.
+                                 # 40 x 8 = 320 mixed groups over 77 tasks: ~4 visits each
+seq_len = 32768                  # per training sample (one branch); compaction keeps branches ~16-25K
+
+# Resumable (s11 rl_run): complete checkpoints are copied to the Volume; a preemption restart or a
+# relaunch with the same --run-name continues from the newest. Checkpoint = full model state
+# (~18 GB if bf16) + LoRA optimizer + orchestrator progress.
+[ckpt]
+interval = 2                     # a preemption loses at most ~2-3 h
+keep_last = 2                    # on the container's local disk (the Volume also keeps 2)
+
+# Every metric in metrics.jsonl (file monitor stays on) + W&B system metrics (GPU / CPU / RAM /
+# disk / network), live, in one shared run named after --run-name. Key: Modal secret
+# `wandb-secret` (s11). s11 also samples both GPUs with nvidia-smi into rl/<name>/system/.
+[monitors.wandb]
+project = "kernelbook-rl"
+tags = ["main2", "qwen3.5-9b", "lora-r16", "gdn-lora", "lr1e-4", "curriculum"]
+
+[deployment]
+gpus_per_node = 2                # one train GPU + one inference GPU
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+[inference.vllm]
+max_model_len = 32768            # as s09_serve.py (E0)
+
+# LoRA r16 / alpha 32, incl. the GatedDeltaNet (linear attention) projections of 24 of 32 layers:
+# 40.1M trainable. Trainer backward at 32K fits (52.7 GiB, check 4); vLLM serves the adapter (smoke).
+[trainer.model.lora]
+rank = 16
+alpha = 32.0
+target_modules = [
+  "q_proj", "k_proj", "v_proj", "o_proj",      # full attention (8 layers)
+  "gate_proj", "up_proj", "down_proj",         # MLPs (all 32 layers)
+  "in_proj_qkv", "in_proj_z", "out_proj",      # linear attention / GatedDeltaNet (24 layers)
+]
+
+[trainer.optim]
+lr = 1e-4                        # was 2e-5 in rl-main-1: right direction, far too small a shift
+
+[orchestrator]
+batch_size = 32                  # TRACES (episodes) per step = 8 groups of 4 (~58 branch samples).
+                                 # Unanimous groups (all pass / all fail) are dropped before batching.
+max_staleness = 1                # near on-policy; smoke: mismatch KL 2-3e-4, 0 IPO-masked tokens
+
+[orchestrator.concurrency]
+max_inflight = 4                 # 10-GPU cap: 2 H100 + 4 x (agent A10G + grader A10G)
+
+[orchestrator.train]
+group_size = 4                   # rollouts per task (GRPO group), as baseline / E0
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 8192     # per turn, as baseline / E0
+
+[orchestrator.renderer]
+name = "qwen3.5"                 # our image patches its tool-argument .strip() bug
+
+[[orchestrator.train.source]]
+name = "kernelbook"
+env.taskset.id = "kernelbook_taskset"
+env.taskset.registry_path = "work.nosync/tasks/registry-curriculum.json"  # s16; s11 swaps in container paths
+env.taskset.dataset = "kernelbook-curriculum"
+env.taskset.ignore_timeouts = false        # keep task.toml's 900 s agent / 600 s grader limits
+env.agent.max_turns = 30
+env.agent.harness.id = "bash"
+# Pinned: under `rl` the harness can't discover the context window (via prime-rl's router) and would
+# silently run with NO compaction (smoke attempt 2). 16384 = what baseline / E0 got by discovery.
+env.agent.harness.compaction.summarize_at_tokens = 16384
+env.agent.runtime.type = "custom"
+env.agent.runtime.import_path = "modal_runtime.ModalBackend"
+# Sandboxes reach the env worker's interception server through a modal.forward tunnel (s11).
+env.interception.type = "server"
+env.interception.tunnel.type = "custom"
+env.interception.tunnel.url = "__TUNNEL_URL__"                           # s11 fills this in
+env.interception.tunnel.port = 8765
+serve.pool.type = "static"
+serve.pool.num_workers = 1

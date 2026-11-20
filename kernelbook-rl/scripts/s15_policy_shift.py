@@ -2,6 +2,8 @@
 
 Runs inside the s11 image on one H100 (no sandboxes, no sampling):
     uv run modal run --detach scripts/s11_prime_rl_image.py --which policy_shift
+    uv run modal run --detach scripts/s11_prime_rl_image.py --which policy_shift --run-name rl-main-2 --args 6
+(env RUN / STEP; defaults rl-main-1 / 20. "v20" below means the checkpoint at STEP.)
 
 Takes episodes the run already sampled (trace stream on the Volume) and scores every token the
 model sampled, in its exact context, under two policies built with prime-rl's own model stack:
@@ -11,7 +13,7 @@ Per token: delta = log p_v20 - log p_v0.
 
 Episode sets (advantage A = reward - mean of its group of 4):
     trained_v0     mixed groups sampled entirely by v0 (step 1); trained on at step 1
-    trained_late   mixed groups sampled by v15+; trained on at steps 16-20
+    trained_late   mixed groups sampled by v(STEP-5)+; trained on in the last ~5 steps
     untrained_pass all-pass groups (A = 0, dropped before training)
     untrained_fail all-fail groups (A = 0, dropped before training)
 
@@ -23,6 +25,7 @@ as in check 4), which proves the token sequences were rebuilt correctly.
 """
 
 import json
+import os
 import random
 import statistics as st
 import time
@@ -31,10 +34,11 @@ from pathlib import Path
 
 MODEL = "Qwen/Qwen3.5-9B"
 MAX_LEN = 32768
-RUN = Path("/runs/rl/rl-main-1")
+RUN_NAME, STEP = os.environ.get("RUN", "rl-main-1"), int(os.environ.get("STEP", "20"))
+RUN = Path("/runs/rl") / RUN_NAME
 STREAM = RUN / "monitors/file/traces/stream/00000.jsonl"
-CKPT = RUN / "checkpoints/step_20/trainer"
-OUT = Path("/runs/checks/policy_shift")
+CKPT = RUN / f"checkpoints/step_{STEP}/trainer"
+OUT = Path("/runs/checks/policy_shift") if RUN_NAME == "rl-main-1" else Path(f"/runs/checks/policy_shift_{RUN_NAME}_step{STEP}")
 CAPS = {"trained_v0": 48, "trained_late": 32, "untrained_pass": 24, "untrained_fail": 24}
 TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
            "in_proj_qkv", "in_proj_z", "out_proj"]   # as configs/rl_main.toml
@@ -107,7 +111,7 @@ def select():
         if 0 < mean < 1:
             if vs == {0}:
                 sets["trained_v0"].append(g)
-            elif min(vs) >= 15:
+            elif min(vs) >= max(1, STEP - 5) and max(vs) < STEP:
                 sets["trained_late"].append(g)
         elif mean == 1:
             sets["untrained_pass"].append(g)

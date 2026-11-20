@@ -789,6 +789,23 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   Not evidence of learning yet; E1 now would very likely be null. Next: a stronger run (higher lr,
   more steps), using KL(v0 || vN) and the untrained pass-fail delta as early learning signals.
 
+### 2026-11-19: run 2 plan: `configs/rl_main2.toml` + curriculum (`scripts/s16_curriculum.py`)
+- Changes vs rl-main-1 (everything else, incl. agent settings and group size 4, unchanged):
+  - lr 2e-5 -> **1e-4** (typical LoRA lr; rl-main-1 grad norm ~0.015 never clipped, KL(v0||v20) ~1e-3).
+  - max_steps 20 -> **40**.
+  - Tasks: 138 trainable -> **77 curriculum** tasks. Pooled pass rate p per task (baseline 4 +
+    rl-main-1 ~8 attempts); keep P(mixed group of 4) = 1 - p^4 - (1-p)^4 >= 0.6, i.e. p 0.25..0.75
+    (mean 0.44). Expected mixed share 0.64 -> 0.78 (rl-main-1 observed 0.61); ~4 visits per task.
+    Trade-off: drops the 67 hard tasks (p ~0.1-0.2), where any learning would matter most but
+    signal is rare.
+- Dry run of the launched config passed (lr 0.0001, curriculum registry, W&B tags).
+- s11 fixes: mirror parts (logs / checkpoints / wandb / system) in separate tries with
+  `ignore_dangling_symlinks` (rl-main-1 lost one minute's pass to a W&B symlink).
+- Early gate: `--which policy_shift --run-name rl-main-2 --args 6` on the step-6 checkpoint;
+  continue only if KL(v0||v6) is ~10x rl-main-1's and untrained pass - fail > 0. Watch entropy
+  (> ~0.2), mismatch KL (< ~1e-3), unfiltered pass rate.
+- ETA at the 10-GPU cap (4 in flight): ~45-53 min/step -> ~30-35 h.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -810,6 +827,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Add `prime-kernels` + `flash_attn_3` (lockfile-pinned wheels) to the lean image | The trainer needs both on H100; same versions upstream's Dockerfile installs |
 | Resumable runs: fixed run name, checkpoints copied to the Volume only when complete, auto `--resume` | Modal preempts GPU containers and restarts from scratch (smoke attempt 3 lost 2 steps); prime-rl has no completion marker, so partial checkpoints must never be visible |
 | W&B online (one shared run) for all metrics + system stats; file monitor kept; own nvidia-smi sampler | W&B is built into prime-rl and gets every metric; online gives a live view of long runs (stalls, KL spikes); file + Volume copies keep a record if W&B fails; the sampler covers vLLM's GPU |
+| Run 2: lr 1e-4, 40 steps, curriculum of 77 tasks with P(mixed) >= 0.6 | rl-main-1 moved the policy in the right direction but ~1e-3 KL; more signal per GPU-hour and bigger steps, agent settings unchanged so E1 vs E0 stays weights-only |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up
