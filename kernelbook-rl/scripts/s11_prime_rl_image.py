@@ -108,6 +108,7 @@ image = (
     .add_local_file(PROJECT / "modal_runtime.py", f"{KB}/modal_runtime.py")
     .add_local_file(PROJECT / "scripts/s12_renderer_check.py", f"{KB}/scripts/s12_renderer_check.py")
     .add_local_file(PROJECT / "scripts/s13_trainer_check.py", f"{KB}/scripts/s13_trainer_check.py")
+    .add_local_file(PROJECT / "scripts/s15_policy_shift.py", f"{KB}/scripts/s15_policy_shift.py")
     .add_local_dir(PROJECT / "configs", f"{KB}/configs", ignore=_skip)
     .add_local_dir(PROJECT / "work.nosync/tasks", f"{KB}/work.nosync/tasks", ignore=_skip)
 )
@@ -516,6 +517,20 @@ def rl_run(config: str, run_name: str, args: str = "") -> None:
     print(f"-> exit {code}", flush=True)
 
 
+@app.function(gpu="H100", cpu=8, memory=131072, timeout=3 * 60 * 60,
+              volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache})
+def policy_shift() -> None:
+    """Offline check (scripts/s15_policy_shift.py): score rl-main-1's sampled tokens under the base
+    policy v0 and the step-20 checkpoint; results in /runs/checks/policy_shift/."""
+    import subprocess
+    runs.reload()
+    code = subprocess.run("torchrun --nproc-per-node 1 --master-port 29512 scripts/s15_policy_shift.py",
+                          shell=True, cwd=KB).returncode
+    runs.commit()
+    hf_cache.commit()
+    print(f"-> exit {code}", flush=True)
+
+
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "",
          config: str = "configs/rl_smoke.toml", run_name: str = "") -> None:
@@ -534,6 +549,10 @@ def main(which: str = "image", dry_run: bool = False, args: str = "",
         return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
+        return
+    if which == "policy_shift":
+        call = policy_shift.spawn()
+        print(f"spawned policy_shift: function call {call.object_id}", flush=True)
         return
     if which == "trainer":
         check_trainer.remote(parts=args or "abc")

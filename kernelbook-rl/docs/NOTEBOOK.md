@@ -695,6 +695,99 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 - s11 `--dry-run` now validates the `--config` passed (it always checked rl_smoke.toml).
   Dry run of rl_main: all fields resolve as intended; W&B key verified.
 - Launch: `--which rl --config configs/rl_main.toml --run-name rl-main-1` (spawned, resumable).
+- Running (app `ap-GBcAX6crWV5a8wtP07MPb7`, container up 13:54 PST after ~25 min in the H100 queue).
+  W&B: https://wandb.ai/ksha/kernelbook-rl/runs/dc4855d7e8734d9e9458881ecec86eab (account `ksha`).
+  - Startup: trainer offered v0 before the orchestrator was up ("waiting for the broadcast
+    receiver" x3 min), synced at 21:58:54 UTC; rollouts from 21:59.
+  - Step 1 (orch 22:50 UTC, 51 min): reward 0.44, trainable 32/32, turns 26.6, branches 2.7,
+    staleness 0, truncation 69%. Trainer: loss 0.0006, entropy 0.45, mismatch KL 0.0003, grad norm
+    0.0138, 53.7 GiB.
+  - Step 2 (orch 23:54 UTC, 1 h 3 min): reward 0.38, branches 2.6, truncation 78%. Trainer: loss
+    0.0008, entropy 0.48, mismatch KL 0.0003, grad norm 0.0129, 48.4 GiB, 6,367 tok/s.
+  - **First checkpoint (step 2): 38.1 GB** trainer DCP shard (~fp32 9B, not bf16 as guessed) +
+    0.9 MB `.metadata` + 23 KB orchestrator `progress.pt`. Copied to the Volume in 63 s; the
+    `.partial` -> `step_2` rename became visible on the Volume at the next commit. Volume keeps 2
+    (~76 GB).
+  - One mirror pass failed on a briefly dangling W&B symlink (prime-rl puts W&B files in the run
+    dir regardless of WANDB_DIR); that pass skipped the checkpoint check. To fix for the next
+    launch: `ignore_dangling_symlinks=True`, checkpoint sync in its own try.
+
+### 2026-11-19: `rl-main-1` finished (20 steps, exit 0)
+- 13:54 PST 11-18 -> 15:33 UTC 11-19 (~17.6 h). No preemption, so resume was never exercised.
+  Final checkpoint `step_20` on the Volume (`rl/rl-main-1/checkpoints/step_20`, copied in 62 s).
+- Infra failures (episodes dropped, then replaced): 1 grader scoring timeout (step 13), 1 sandbox
+  provisioning failure and 1 unreadable `reward.json` (step 16, the slowest step at 1 h 28 m).
+
+| Step | Time | Reward | Turns | Branches | Trunc. | Entropy | Mismatch KL | Grad norm |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 51m 17s | 0.4375 | 26.6 | 2.7 | 68.8% | 0.4465 | 0.0003 | 0.0138 |
+| 2 | 1h 3m | 0.3750 | 26.2 | 2.6 | 78.1% | 0.4801 | 0.0003 | 0.0129 |
+| 3 | 49m 40s | 0.4375 | 25.6 | 2.4 | 68.8% | 0.4533 | 0.0003 | 0.0120 |
+| 4 | 43m 53s | 0.5625 | 24.1 | 2.1 | 53.1% | 0.4851 | 0.0003 | 0.0131 |
+| 5 | 29m 15s | 0.5000 | 22.4 | 2.0 | 59.4% | 0.4652 | 0.0003 | 0.0144 |
+| 6 | 49m 9s | 0.5312 | 24.1 | 2.3 | 62.5% | 0.4921 | 0.0003 | 0.0149 |
+| 7 | 34m 29s | 0.4688 | 23.4 | 2.3 | 62.5% | 0.4193 | 0.0002 | 0.0132 |
+| 8 | 51m 0s | 0.4062 | 24.8 | 2.3 | 59.4% | 0.4401 | 0.0003 | 0.0130 |
+| 9 | 1h 5m | 0.4375 | 25.3 | 2.2 | 65.6% | 0.4474 | 0.0002 | 0.0142 |
+| 10 | 1h 11m | 0.4375 | 25.5 | 2.4 | 62.5% | 0.4759 | 0.0003 | 0.0139 |
+| 11 | 39m 36s | 0.4062 | 26.5 | 2.3 | 75.0% | 0.4542 | 0.0002 | 0.0141 |
+| 12 | 1h 4m | 0.4688 | 25.4 | 2.2 | 62.5% | 0.4512 | 0.0003 | 0.0144 |
+| 13 | 1h 10m | 0.5000 | 24.3 | 2.6 | 65.6% | 0.4493 | 0.0003 | 0.0132 |
+| 14 | 38m 56s | 0.3750 | 26.8 | 2.4 | 68.8% | 0.4365 | 0.0002 | 0.0126 |
+| 15 | 44m 11s | 0.5000 | 21.9 | 1.8 | 50.0% | 0.4307 | 0.0002 | 0.0165 |
+| 16 | 1h 28m | 0.5000 | 26.6 | 2.5 | 62.5% | 0.4471 | 0.0002 | 0.0140 |
+| 17 | 44m 15s | 0.4375 | 26.2 | 2.7 | 68.8% | 0.3897 | 0.0002 | 0.0119 |
+| 18 | 52m 47s | 0.4688 | 22.8 | 2.3 | 56.2% | 0.4469 | 0.0002 | 0.0131 |
+| 19 | 1h 0m | 0.3750 | 26.9 | 2.6 | 71.9% | 0.4122 | 0.0002 | 0.0136 |
+| 20 | 37m 25s | 0.3750 | 26.8 | 2.4 | 71.9% | 0.4724 | 0.0003 | 0.0141 |
+
+- **Batch reward is flat:** mean 0.46 over steps 1-5, 0.43 over steps 16-20; turns and truncation
+  show no trend either. Caveat: this is the filtered reward (mixed groups only, pulled toward 0.5),
+  so it can stay flat even if more tasks become always-solved. Check the unfiltered `reward` /
+  `rollout/*` series in W&B, and the trainable share. The real test is E1 on dev.
+- Training health was stable throughout: entropy 0.39-0.49 (no collapse), mismatch KL 2-3e-4,
+  grad norm 0.012-0.017, peak memory 48.4 GiB.
+- Small update by design: 20 steps x lr 2e-5 on LoRA r16; whether the policy moved enough to show on
+  dev is the open question.
+
+### 2026-11-19: paired per-task analysis of `rl-main-1` (train tasks): no detectable improvement
+- Data: trace stream (`monitors/file/traces/stream`, task + policy version per episode) joined with
+  `stream.index.jsonl` (reward). 1,058 ok episodes; every task was sampled in 2 passes (2 groups of 4).
+- Pairing: each task's 1st visit (mean policy v4.4) vs 2nd visit (v14.2), 129 tasks with both.
+  - Pass rate 0.333 -> 0.346: **+1.2 pts, 95% bootstrap CI -4.1 .. +6.7**.
+  - Tasks up 48, down 43, same 38; sign test p = 0.68.
+  - Outcome transitions are symmetric: all-fail -> mixed 24 vs mixed -> all-fail 20;
+    mixed -> all-pass 9 vs all-pass -> mixed 7.
+- Reading: no improvement on train is detectable; effects larger than about +7 pts are ruled out.
+  The run was small (20 updates, LoRA r16, lr 2e-5, 640 graded episodes).
+- Noise floor: 4 samples per task visit. On the 1st visit 44 of the "trainable" tasks (0 < baseline
+  pass < 1) were all-fail and 7 all-pass: regression to the mean from the baseline selection.
+- Implications: E1 on dev will most likely match E0 within noise. Levers for a next run: more steps
+  (the 24 h cap was the binding constraint), higher lr (5e-5, prime-rl's LoRA example), larger
+  group size (8) for sharper advantages, more rollouts in flight (GPU cap).
+
+### 2026-11-19: offline policy-shift check (`scripts/s15_policy_shift.py`, s11 `--which policy_shift`)
+- Scored 112 rl-main-1 episodes (280 branches, 1.65M sampled tokens) under base v0 and the step-20
+  checkpoint with prime-rl's model stack; delta = log p_v20 - log p_v0 per sampled token. 1 H100,
+  ~9 min of scoring.
+- Sanity: trainer v0 vs vLLM on v0-sampled tokens: mismatch KL 0.00026 (check 4: 0.00029), so the
+  sequences were rebuilt correctly.
+- **Moved little:** KL(v0 || v20) = 0.00095 per token, ~3.7x the engine mismatch; mean |delta| 0.016.
+- **Right direction on trained data:**
+
+  | Set | A > 0: mean delta/token (95% CI) | A < 0 |
+  |---|---|---|
+  | trained at step 1 (v0-sampled) | +0.0021 (+0.0016..+0.0027), seq +29 nats | -0.0027 (-0.0032..-0.0023), seq -40 |
+  | trained at steps 16-20 | +0.0006 (+0.0004..+0.0009) | +0.0001 (0.0000..+0.0002) |
+
+  corr(A, delta) = +0.73 over 64 trained episodes.
+- **No generalization:** never-trained all-pass vs all-fail episodes: delta +0.0001 vs +0.0000
+  (CIs overlap zero). The update raised the likelihood of the specific passing trajectories it
+  trained on, but did not shift the policy toward passing behaviour in general.
+- Conclusion: GRPO + IPO + LoRA work mechanically (sign and size track the advantage), but the
+  total movement is far too small to change outcomes, which explains the flat paired pass rate.
+  Not evidence of learning yet; E1 now would very likely be null. Next: a stronger run (higher lr,
+  more steps), using KL(v0 || vN) and the untrained pass-fail delta as early learning signals.
 
 ## 4. Decisions (and why)
 
