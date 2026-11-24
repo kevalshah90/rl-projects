@@ -17,8 +17,9 @@ from pathlib import Path
 import httpx
 from openai import OpenAI
 
-MODEL = "Qwen/Qwen3.5-9B"
-URL = "https://kevalshah90--kernelbook-vllm-serve.modal.run"
+MODEL = os.environ.get("PING_MODEL", "Qwen/Qwen3.5-9B")      # E1: PING_MODEL=rl-main-2-step20
+URL = os.environ.get("PING_URL", "https://kevalshah90--kernelbook-vllm-serve.modal.run")
+#                            E1: PING_URL=https://kevalshah90--kernelbook-vllm-e1-serve.modal.run
 # The key lives in the gitignored .env (VLLM_API_KEY=...), the same value as the Modal secret.
 KEY = os.environ.get("VLLM_API_KEY") or next(
     line.split("=", 1)[1].strip() for line in Path(".env").read_text().splitlines()

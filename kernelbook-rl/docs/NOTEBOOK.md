@@ -806,6 +806,83 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
   (> ~0.2), mismatch KL (< ~1e-3), unfiltered pass rate.
 - ETA at the 10-GPU cap (4 in flight): ~45-53 min/step -> ~30-35 h.
 
+### 2026-11-20: `rl-main-2` launched; step-6 gate (policy-shift check on step_6)
+- Launched 07:37 UTC 11-20 (app ap-VFOMiwaImhA014aIwshC6y, W&B run 41b4f76b). Steps 1-6: 30-60 min
+  each (faster than rl-main-1's ~53), shipped-batch reward 0.44 / 0.56 / 0.41 / 0.44 / 0.53 / 0.47,
+  mismatch KL 2-4e-4, grad norm ~0.014. **Entropy rising: 0.44 -> 0.44 -> 0.46 -> 0.48 -> 0.55 -> 0.60.**
+- Policy-shift check, v0 vs step_6 (112 episodes, 1.50M sampled tokens; sanity mismatch KL 0.00025):
+  - **Moved ~10x more:** KL(v0 || v6) = 0.0100 (rl-main-1 at v20: 0.00095). Gate criterion 1 met.
+  - Direction right on trained data, corr(A, delta) +0.77, but **asymmetric**: step-1 groups A>0
+    +0.0051/token (seq +70 nats), A<0 **-0.0207**/token (seq -297); steps 1-5 groups +0.0028 / -0.0058.
+  - Mean delta on all v0-sampled tokens -0.010: the update mostly pushes sampled tokens down,
+    spreading probability mass, consistent with the entropy rise.
+  - **No generalization yet:** never-trained all-pass -0.0049 vs all-fail -0.0036 per token;
+    pass - fail = -0.0014 (CIs overlap). Gate criterion 2 not met.
+  - Likely cause of the asymmetry: failing attempts are longer (30-turn truncations) and more numerous,
+    and the token-mean loss weights each attempt by its token count, so negative-advantage tokens
+    dominate the gradient.
+
+### 2026-11-20: `rl-main-2` steps 7-10; policy-shift check on step_10 (and a confound)
+- Steps 7-10: 24-36 min each; entropy settled at 0.53-0.57 (peak 0.60 at step 6); mismatch KL
+  3-4e-4; grad norm 0.014-0.018. Turns per attempt 25-26 (steps 1-3) -> 18.5-20.8 (steps 7-10),
+  truncation ~65% -> 38-56%.
+- Unfiltered pass rate (`train/kernelbook/all/agent/reward/mean`): steps 1-5 0.39 / 0.36 / 0.59 /
+  0.41 / 0.38 (mean 0.42), steps 6-10 0.50 / 0.43 / 0.48 / 0.55 / 0.50 (mean 0.49). Curriculum
+  tasks' pre-training pooled p = 0.44. ~40 attempts per step, so not yet significant.
+- Policy-shift v0 vs step_10: KL(v0 || v10) = 0.016 (17x rl-main-1 at v20); mean delta on v0 tokens
+  -0.016. Step-1 groups: A>0 +0.0006 (CI includes 0; was +0.0051 at step 6), A<0 -0.029.
+  Steps 5-9 groups: A>0 +0.0129, A<0 +0.0057 (gap +0.007). corr(A, delta) +0.57.
+- Untrained pass - fail = +0.011 at face value, **but confounded by sampling version**: tokens
+  sampled by a later policy are already more likely under v10. The untrained pass episodes were
+  sampled at v1-v8 (mean 4.2), the fail episodes at v0-v3 (mean 1.3). Version-matched (v0-v2):
+  pass -0.0140 (n=12) vs fail -0.0134 (n=20), difference -0.0006: **no generalization signal**.
+  The same artifact explains trained_late A<0 being positive. Fix for s15: compare only
+  version-matched episodes (or score a fixed v0-sampled held-out set).
+- Reading: the update is dominated by pushing down failing (long, truncated) attempts; probability
+  of v0's own behaviour falls overall. Behavioural signals (pass rate, fewer turns) point the
+  right way but are noisy; the decisive test is dev eval (E1) on a checkpoint.
+
+### 2026-11-20: E1 plan: dev eval of `rl-main-2` at step 20 (intermediate) and step 40 (headline)
+- **Pre-registered (before any E1 result):** the headline E1 number is the **step-40** checkpoint
+  (end of rl-main-2). Step 20 is an intermediate point on the curve E0 -> step 20 -> step 40.
+  Reporting the best of several dev-evaluated checkpoints would be selection on dev.
+- Pipeline (tested on step 12 first):
+  - `s17_merge_lora.py` merges W += (alpha/r) B A in prime-rl's own model stack and writes HF
+    safetensors. Checks vs the base snapshot: same 775 tensor names and shapes, the 200 LoRA-target
+    tensors changed, 568 others bit-identical, 15 untouched (MTP) tensors copied from base.
+  - `s09_serve.py` with `SERVE_MODEL_DIR` serves it as app `kernelbook-vllm-e1`: same vLLM 0.31.0
+    image and flags as E0. A ping with a tool call passed.
+  - `configs/eval_dev_e1.toml` = `eval_dev.toml` with only `model` and `base_url` changed. Run
+    with `s10_modal_eval.py`, so the eval host is a Modal container instead of the Mac (E0). That
+    changes only the transport, not tasks, prompts or sampling.
+- Step 20: merged at 21:15 UTC (relative |dW|/|W| ~2.5e-3), E1 started 21:23 UTC, run dir
+  `eval_dev/kernelbook_taskset--rl-main-2-step20--bash--d390473e`. It runs alongside rl-main-2
+  under the 10-GPU cap (3 H100 + sandboxes), so both are slower.
+- **E1 at step 20 stopped after ~25 min (16 episodes)**: with rl-main-2 it needed ~16 GPUs against
+  the 10-GPU cap, and contention can turn into grading/sandbox timeouts that would count as
+  failures in E1. Partial run kept locally in `work.nosync/outputs/aborted/` (not used). E1 on the
+  saved step-20 model and on step 40 will run one after the other once rl-main-2 ends.
+- Fixes along the way: `s15_policy_shift.py` now compares untrained pass vs fail only in
+  version-matched pairs; `s10_modal_eval.py` spawns (a .remote() call dies with the Mac client).
+
+### 2026-11-21: `rl-main-2` collapsed after step ~25; run ended at step 31 (interrupt 04:16 UTC)
+- Overall pass rate (all attempts): steps 1-5 0.43, **11-20 0.53 (best)**, 21-25 0.44, 26-29 0.32
+  (0.27 / 0.25 / 0.42 / 0.34). Pre-training p on these 77 tasks: ~0.44.
+- Collapse signature: turns per attempt 24 (early) -> 17-20 (steps 21-24) -> 7.9 (step 30) -> 5.2
+  (step 31); entropy 0.50 (step 20) -> 0.29 (30) -> 0.19 (31); grad norm 0.015 -> 0.10 spike (29);
+  stale-token mismatch KL 1e-3 (18) -> 1.0e-2 (22) -> 1.6e-2 (30); IPO-masked 0.02% -> 0.2%. Step 31
+  shipped-batch reward 0.22. During step 32 nearly every group was unanimous (all fail): "no admitted
+  train payload ... zero advantage" for ~160 consecutive attempts.
+- The model learned to end attempts early. Likely mechanism: the token-mean loss with long failing
+  attempts dominating (see the step-6 check: A<0 pushed down ~4x harder than A>0 pulled up), at
+  lr 1e-4, rewards stopping sooner; once short attempts mostly fail, groups go all-fail and the
+  signal disappears.
+- The container received an interrupt at 04:16 UTC (cause not identified; not by us) mid-step 32.
+  Volume: checkpoints step_28, step_30; kept step_24 (`/runs/keep/rl-main-2/step_24`, resumable);
+  merged step 20 (`/runs/models/rl-main-2-step20`).
+- The pre-registered E1 headline (step 40) no longer exists. E1 will evaluate step 20 (best stretch,
+  merged before the collapse was visible); report the collapse alongside it, not instead of it.
+
 ## 4. Decisions (and why)
 
 | Decision | Why |
@@ -828,6 +905,7 @@ RL is "on-policy" when mu = pi_theta at the moment of the gradient step, and "of
 | Resumable runs: fixed run name, checkpoints copied to the Volume only when complete, auto `--resume` | Modal preempts GPU containers and restarts from scratch (smoke attempt 3 lost 2 steps); prime-rl has no completion marker, so partial checkpoints must never be visible |
 | W&B online (one shared run) for all metrics + system stats; file monitor kept; own nvidia-smi sampler | W&B is built into prime-rl and gets every metric; online gives a live view of long runs (stalls, KL spikes); file + Volume copies keep a record if W&B fails; the sampler covers vLLM's GPU |
 | Run 2: lr 1e-4, 40 steps, curriculum of 77 tasks with P(mixed) >= 0.6 | rl-main-1 moved the policy in the right direction but ~1e-3 KL; more signal per GPU-hour and bigger steps, agent settings unchanged so E1 vs E0 stays weights-only |
+| E1 headline = rl-main-2 step 40; step 20 intermediate (fixed before any result) | Evaluating several checkpoints on dev and reporting the best would be selection on dev |
 | Before/after on dev (E0), not train | Train tasks get trained on (memorization) and were selected by noisy scores (regression to the mean) |
 
 ## 5. Threats to validity / caveats for the write-up

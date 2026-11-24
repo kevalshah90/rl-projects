@@ -17,9 +17,15 @@ Episode sets (advantage A = reward - mean of its group of 4):
     untrained_pass all-pass groups (A = 0, dropped before training)
     untrained_fail all-fail groups (A = 0, dropped before training)
 
-Expected if the policy learned: delta > 0 on A > 0 episodes, < 0 on A < 0 (trained sets); and
+Expected if the policy learned: delta(A > 0) > delta(A < 0) within the trained sets; and
 delta(untrained_pass) > delta(untrained_fail) if it generalizes to passing behaviour it never
 trained on. KL(v0 || v20) on v0-sampled tokens measures how far the policy moved overall.
+
+Version matching (2026-11-20): tokens sampled by a later policy are already more likely under the
+checkpoint, whatever their reward. So compare only episodes sampled by the same policy version:
+untrained pass and fail groups are drawn in equal numbers per sampling version (a group's version
+= the newest version among its tokens), and the pass - fail difference is averaged over versions.
+Within a trained group all 4 episodes share versions, so A > 0 vs A < 0 is already matched.
 Sanity: on v0-sampled tokens, v0's logprobs must match vLLM's recorded ones (mismatch KL ~3e-4,
 as in check 4), which proves the token sequences were rebuilt correctly.
 """
@@ -100,6 +106,7 @@ def select():
     for r in recs:
         groups[r["group"]].append(r)
     sets = defaultdict(list)
+    untrained = {"untrained_pass": defaultdict(list), "untrained_fail": defaultdict(list)}
     for g in groups.values():
         rs = [r["reward"] for r in g]
         if len(g) < 4:
@@ -113,11 +120,21 @@ def select():
                 sets["trained_v0"].append(g)
             elif min(vs) >= max(1, STEP - 5) and max(vs) < STEP:
                 sets["trained_late"].append(g)
-        elif mean == 1:
-            sets["untrained_pass"].append(g)
         else:
-            sets["untrained_fail"].append(g)
+            untrained["untrained_pass" if mean == 1 else "untrained_fail"][max(vs)].append(g)
     random.seed(0)
+    pairs = []   # (pass group, fail group) sampled by the same policy version
+    for v in sorted(set(untrained["untrained_pass"]) & set(untrained["untrained_fail"])):
+        gp, gf = untrained["untrained_pass"][v][:], untrained["untrained_fail"][v][:]
+        random.shuffle(gp)
+        random.shuffle(gf)
+        pairs += [(v, a, b) for a, b in zip(gp, gf)]
+    random.shuffle(pairs)
+    for v, a, b in pairs[:CAPS["untrained_pass"] // 4]:
+        for r in a + b:
+            r["gver"] = v
+        sets["untrained_pass"].append(a)
+        sets["untrained_fail"].append(b)
     chosen = []
     for name, cap in CAPS.items():
         gs = sets[name][:]
@@ -126,7 +143,8 @@ def select():
         for r in eps:
             r["set"] = name
         chosen += eps
-        print(f"{name}: {len(sets[name])} groups available, {len(eps)} episodes chosen", flush=True)
+        print(f"{name}: {len(sets[name])} groups available (version-matched for untrained), "
+              f"{len(eps)} episodes chosen", flush=True)
     for r in chosen:
         r["branches"] = branches(r.pop("rec"))
     return chosen
@@ -192,6 +210,7 @@ def main():
                     sanity.append(vlp - a)    # vLLM (v0) vs trainer v0
                     kl_v0.append(z - a)
         per_ep.append({"id": e["id"], "task": e["task"], "set": e["set"], "reward": e["reward"], "A": e["A"],
+                       "gver": e.get("gver"), "versions": sorted(e["versions"]),
                        "n": len(deltas), "mean_delta": st.mean(deltas), "sum_delta": sum(deltas)})
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "episodes.json").write_text(json.dumps(per_ep, indent=1))
@@ -214,10 +233,30 @@ def main():
     if len(tr) > 2:
         xa, xd = [p["A"] for p in tr], [p["mean_delta"] for p in tr]
         print(f"\n  corr(A, mean delta) over trained episodes: {st.correlation(xa, xd):+.3f} (n={len(tr)})")
-    up = [p["mean_delta"] for p in per_ep if p["set"] == "untrained_pass"]
-    dn = [p["mean_delta"] for p in per_ep if p["set"] == "untrained_fail"]
-    if up and dn:
-        print(f"  untrained pass - fail: {st.mean(up) - st.mean(dn):+.5f} (generalization to unseen passing behaviour)")
+    for name in [n for n in CAPS if n.startswith("trained")]:
+        pos = [p["mean_delta"] for p in per_ep if p["set"] == name and p["A"] > 0]
+        neg = [p["mean_delta"] for p in per_ep if p["set"] == name and p["A"] < 0]
+        if pos and neg:
+            print(f"  {name}: A>0 - A<0 gap {st.mean(pos) - st.mean(neg):+.5f}")
+    # generalization, version-matched: per sampling version, mean(pass) - mean(fail); then the
+    # average over versions weighted by the smaller count, with a bootstrap over episodes
+    by_v = defaultdict(lambda: {"untrained_pass": [], "untrained_fail": []})
+    for p in per_ep:
+        if p["set"].startswith("untrained"):
+            by_v[p["gver"]][p["set"]].append(p["mean_delta"])
+    strata = [(v, d["untrained_pass"], d["untrained_fail"]) for v, d in sorted(by_v.items())
+              if d["untrained_pass"] and d["untrained_fail"]]
+    def matched(st_):
+        w = [min(len(a), len(b)) for _, a, b in st_]
+        return sum(wi * (st.mean(a) - st.mean(b)) for wi, (_, a, b) in zip(w, st_)) / sum(w)
+    if strata:
+        for v, a, b in strata:
+            print(f"  untrained v{v}: pass n={len(a)} {st.mean(a):+.5f} | fail n={len(b)} {st.mean(b):+.5f}")
+        random.seed(2)
+        bs = sorted(matched([(v, random.choices(a, k=len(a)), random.choices(b, k=len(b)))
+                             for v, a, b in strata]) for _ in range(2000))
+        print(f"  untrained pass - fail (version-matched): {matched(strata):+.5f} "
+              f"(95% CI {bs[50]:+.5f} .. {bs[1950]:+.5f}) <- generalization to unseen passing behaviour")
     print(f"\nper-episode results -> {OUT / 'episodes.json'}", flush=True)
 
 

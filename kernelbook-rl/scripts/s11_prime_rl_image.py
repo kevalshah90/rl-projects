@@ -109,6 +109,7 @@ image = (
     .add_local_file(PROJECT / "scripts/s12_renderer_check.py", f"{KB}/scripts/s12_renderer_check.py")
     .add_local_file(PROJECT / "scripts/s13_trainer_check.py", f"{KB}/scripts/s13_trainer_check.py")
     .add_local_file(PROJECT / "scripts/s15_policy_shift.py", f"{KB}/scripts/s15_policy_shift.py")
+    .add_local_file(PROJECT / "scripts/s17_merge_lora.py", f"{KB}/scripts/s17_merge_lora.py")
     .add_local_dir(PROJECT / "configs", f"{KB}/configs", ignore=_skip)
     .add_local_dir(PROJECT / "work.nosync/tasks", f"{KB}/work.nosync/tasks", ignore=_skip)
 )
@@ -541,6 +542,37 @@ def policy_shift(run_name: str = "rl-main-1", step: int = 20) -> None:
     print(f"-> exit {code}", flush=True)
 
 
+@app.function(gpu="H100", cpu=8, memory=131072, timeout=60 * 60,
+              volumes={"/runs": runs, "/root/.cache/huggingface": hf_cache})
+def merge(run_name: str = "rl-main-2", step: int = 20) -> None:
+    """scripts/s17_merge_lora.py: merge a run's step-N LoRA into the base -> /runs/models/<run>-step<N>."""
+    import os
+    import subprocess
+    runs.reload()
+    code = subprocess.run("torchrun --nproc-per-node 1 --master-port 29513 scripts/s17_merge_lora.py",
+                          shell=True, cwd=KB, env={**os.environ, "RUN": run_name, "STEP": str(step)}).returncode
+    runs.commit()
+    print(f"-> exit {code}", flush=True)
+
+
+@app.function(cpu=4, memory=8192, timeout=60 * 60, volumes={"/runs": runs})
+def keep_ckpt(run_name: str, step: int) -> None:
+    """Copy a complete checkpoint to /runs/keep/<run>/step_N, outside rl_run's keep-newest-2 pruning."""
+    import shutil
+    import time
+    runs.reload()
+    src = Path("/runs/rl") / run_name / "checkpoints" / f"step_{step}"
+    dst = Path("/runs/keep") / run_name / f"step_{step}"
+    assert ckpt_complete(src), f"no complete checkpoint at {src}"
+    tmp = dst.with_name(dst.name + ".partial")
+    shutil.rmtree(tmp, ignore_errors=True)
+    t0 = time.time()
+    shutil.copytree(src, tmp)
+    tmp.rename(dst)
+    runs.commit()
+    print(f"kept {src} -> {dst} in {time.time() - t0:.0f}s", flush=True)
+
+
 @app.local_entrypoint()
 def main(which: str = "image", dry_run: bool = False, args: str = "",
          config: str = "configs/rl_smoke.toml", run_name: str = "") -> None:
@@ -559,6 +591,13 @@ def main(which: str = "image", dry_run: bool = False, args: str = "",
         return
     if which == "e2e":
         e2e.remote(dry_run=dry_run, args=args)
+        return
+    if which == "keep_ckpt":
+        keep_ckpt.remote(run_name=run_name, step=int(args))
+        return
+    if which == "merge":
+        call = merge.spawn(run_name=run_name or "rl-main-2", step=int(args or 20))
+        print(f"spawned merge: function call {call.object_id}", flush=True)
         return
     if which == "policy_shift":
         call = policy_shift.spawn(run_name=run_name or "rl-main-1", step=int(args or 20))

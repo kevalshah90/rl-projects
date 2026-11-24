@@ -130,4 +130,7 @@ def run(config: str = "", args: str = "", resume: str = "") -> None:
 def main(config: str = "", args: str = "", resume: str = "") -> None:
     if not (config or resume):
         raise SystemExit("pass --config configs/X.toml [--args '...'] or --resume RUN_DIR")
-    run.remote(config=config, args=args, resume=resume)
+    # spawn, not remote: a .remote() call is cancelled when the Mac client dies, even with --detach
+    # (smoke run, 2026-11-17); a spawned call runs on regardless.
+    call = run.spawn(config=config, args=args, resume=resume)
+    print(f"spawned vf-eval: function call {call.object_id}", flush=True)
